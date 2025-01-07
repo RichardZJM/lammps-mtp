@@ -276,9 +276,17 @@ void PairMTP::read_file(char *mtp_file_name)
     for (int i = 0; i < alpha_scalar_count; i++) {
       alpha_moment_mapping[i] = line_tokens.next_int();
     }
-    alpha_scalar_count++;    // Add 1 to account for the 0th rank tensor
+    // alpha_scalar_count++;    // The 0th rank tensor scalar is accounted for by the species coefficients
 
     //Read the species coefficients
+    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    keyword = line_tokens.next_string();
+    if (keyword != "species_coeffs")
+      error->all(FLERR, "Error reading MTP file. Species coefficients not found.");
+    memory->create(species_coeffs, species_count, "species_coeffs");
+    for (int i = 0; i < species_count; i++) { species_coeffs[i] = line_tokens.next_double(); }
+
+    //Read the alpha moment mappings
     line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_moment_mapping")
@@ -287,5 +295,13 @@ void PairMTP::read_file(char *mtp_file_name)
     for (int i = 0; i < alpha_scalar_count; i++) {
       alpha_moment_mapping[i] = line_tokens.next_int();
     }
+
+    //Read the linear MTP basis coefficients
+    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    keyword = line_tokens.next_string();
+    if (keyword != "moment_coeffs")
+      error->all(FLERR, "Error reading MTP file. Moment coefficients not found.");
+    memory->create(linear_coeffs, alpha_scalar_count, "moment_coeffs");
+    for (int i = 0; i < alpha_scalar_count; i++) { linear_coeffs[i] = line_tokens.next_double(); }
   }
 }

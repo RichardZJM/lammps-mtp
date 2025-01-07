@@ -57,8 +57,8 @@ class PairMTP : public Pair {
   double *radial_basis_coeffs;
   int radial_func_count;
 
-  double *regression_coeffs;    // For the MTP basis set
-  double *linear_coeffs;        // For the species coefficient (0th order moment tensor)
+  double *linear_coeffs;     // These are the moment tensor basis coeffs (eps)
+  double *species_coeffs;    // For the species coefficients (0th rank moment tensor)
   int alpha_moment_count, alpha_index_basic_count, alpha_index_times_count, alpha_scalar_count;
   int (*alpha_index_basic)[4];
   int (*alpha_index_times)[4];
