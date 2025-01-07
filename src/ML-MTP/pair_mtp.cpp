@@ -50,31 +50,28 @@ PairMTP::~PairMTP()
   if (allocated) {
     memory->destroy(setflag);
     memory->destroy(cutsq);
+    memory->destroy(moment_tensor_vals);
+    memory->destroy(basis_vals);
+    memory->destroy(basis_ders);
+    memory->destroy(radial_basis_coeffs);
+    memory->destroy(linear_coeffs);
+    memory->destroy(species_coeffs);
+    memory->destroy(alpha_index_basic);
+    memory->destroy(alpha_index_times);
+    memory->destroy(alpha_moment_mapping);
     delete radial_basis;
   }
 }
 
 /* ----------------------------------------------------------------------
-   allocate all arrays
-------------------------------------------------------------------------- */
-
-// void PairMTP::allocate()
-// {
-//   allocated = 1;
-//   int n = atom->ntypes;
-//   memory->create(setflag, n + 1, n + 1, "pair:setflag");
-//   memory->create(cutsq, n + 1, n + 1, "pair:cutsq");
-//   map = new int[n + 1];
-// }
-
-/* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */
 
-void PairMTP::settings(int narg, char ** /* arg */)
+void PairMTP::settings(int narg, char **arg)
 {
-  if (narg != 0)
-    error->all(FLERR, "Pair Style MTP must have exact 1 arugment, the MTP potential file.");
+  if (narg != 1)
+    error->all(FLERR, "Pair style MTP must have exact 1 argment, the MTP potential file name.");
+  read_file(arg[0]);
 }
 
 /* ----------------------------------------------------------------------
@@ -83,10 +80,8 @@ void PairMTP::settings(int narg, char ** /* arg */)
 
 void PairMTP::coeff(int narg, char **arg)
 {
-  if (narg != 1)
-    error->all(FLERR, "Currently only inference is supported. Please supply the MTP file");
-
-  // if (!allocated) allocate();
+  // The potential file is specified in the setting function instead.
+  if (narg != 0) error->all(FLERR, "Only \"pair_coeff * *\n is permitted");
 }
 
 /* ----------------------------------------------------------------------
@@ -109,27 +104,24 @@ double PairMTP::init_one(int i, int j)
 {
   if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set");
 
-  return 7.0;
+  return rcutmax;
 }
 
-/* ---------------------------------------------------------------------- */
-
-// void PairMTP::allocate()
-// {
-//   allocated = 1;
-//   // memory->create
-// }
-
+/* ----------------------------------------------------------------------
+   MTP file parsing helper function. Includes  memory allocation. Excludes some radial basis hyperparameters (in radial basis constructor instead).
+------------------------------------------------------------------------- */
 void PairMTP::read_file(char *mtp_file_name)
 {
   //Open the MTP file on proc 0
-  FILE *mtp_file;
   if (comm->me == 0) {
+
+    // Maybe the read section isn't needed and the potential file reader already handles errors.
+    FILE *mtp_file;
     mtp_file = utils::open_potential(mtp_file_name, lmp, nullptr);
     if (mtp_file == nullptr)
       error->one(FLERR, "Cannot open MTP file {}: ", mtp_file_name, utils::getsyserror());
 
-    PotentialFileReader pfr{lmp, mtp_file_name, "MTP"};
+    PotentialFileReader pfr{lmp, mtp_file_name, "ml-mtp"};
     std::string separators = TOKENIZER_DEFAULT_SEPARATORS + '=,';
 
     ValueTokenizer line_tokens = ValueTokenizer(std::string(pfr.next_line()), separators);
@@ -207,6 +199,7 @@ void PairMTP::read_file(char *mtp_file_name)
       line_tokens = ValueTokenizer(pfr.next_line(), separators + "-");
       int type1 = line_tokens.next_int();
       int type2 = line_tokens.next_int();
+      setflag[type1][type2] = 1;    // Make sure the setflag is set
 
       // Read the coeffs for the pair. First find the offset in the array pointer.
       int pair_offset = type1 * species_count + type2;
