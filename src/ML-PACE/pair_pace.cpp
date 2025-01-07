@@ -195,8 +195,7 @@ void PairPACE::compute(int eflag, int vflag)
       error->one(FLERR, e.what());
     }
 
-    if (flag_corerep_factor)
-      corerep_factor[i] = 1 - aceimpl->ace->ace_fcut;
+    if (flag_corerep_factor) corerep_factor[i] = 1 - aceimpl->ace->ace_fcut;
 
     // 'compute_atom' will update the `aceimpl->ace->e_atom` and `aceimpl->ace->neighbours_forces(jj, alpha)` arrays
 
@@ -305,12 +304,12 @@ void PairPACE::coeff(int narg, char **arg)
   delete aceimpl->basis_set;
   if (comm->me == 0) utils::logmesg(lmp, "Loading {}\n", potential_file_name);
   // if potential is in ACEBBasisSet (YAML) format, then convert to ACECTildeBasisSet automatically
-  if (utils::strmatch(potential_file_name,".*\\.yaml$")) {
+  if (utils::strmatch(potential_file_name, ".*\\.yaml$")) {
     ACEBBasisSet bBasisSet = ACEBBasisSet(potential_file_name);
     ACECTildeBasisSet cTildeBasisSet = bBasisSet.to_ACECTildeBasisSet();
     aceimpl->basis_set = new ACECTildeBasisSet(cTildeBasisSet);
   } else {
-      aceimpl->basis_set = new ACECTildeBasisSet(potential_file_name);
+    aceimpl->basis_set = new ACECTildeBasisSet(potential_file_name);
   }
 
   if (comm->me == 0) {

@@ -39,10 +39,30 @@ class PairMTP : public Pair {
   double init_one(int, int) override;
 
  protected:
-  virtual void allocate();
-  void read_files(char *, char *);
+  //   virtual void allocate();
+  void read_file(char *);
+  std::string potential_name = "Untitled";    //An optional name which isn't currently used.
+  std::string potential_tag = "";    //An optional tag/description which isn't currently used.
+
+  int species_count = 1;    // Only 1 species by default
+
   double rcutmax;
   double rcutmin;
+
+  double *moment_tensor_vals;
+  double *basis_vals;
+  double *basis_ders;
+
+  RadialMTPBasis *radial_basis;
+  double *radial_basis_coeffs;
+  int radial_func_count;
+
+  double *regression_coeffs;    // For the MTP basis set
+  double *linear_coeffs;        // For the species coefficient (0th order moment tensor)
+  int alpha_moment_count, alpha_index_basic_count, alpha_index_times_count, alpha_scalar_count;
+  int (*alpha_index_basic)[4];
+  int (*alpha_index_times)[4];
+  int *alpha_moment_mapping;
 };
 
 }    // namespace LAMMPS_NS
