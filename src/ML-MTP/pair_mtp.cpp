@@ -64,6 +64,36 @@ PairMTP::~PairMTP()
 }
 
 /* ----------------------------------------------------------------------
+   Straightfoward MTP implementation based on MLIP3
+   ---------------------------------------------------------------------- */
+
+void PairMTP::compute(int eflag, int vflag)
+{
+  if (eflag || vflag)
+    ev_setup(eflag, vflag);
+  else
+    evflag = vflag_fdotr = eflag_global = eflag_atom = 0;
+
+  int *ilist, *jlist, *numneigh, **firstneigh;
+  int i, j, ii, jj, inum, jnum, itype, jtype;
+  double **x = atom->x;
+  double **f = atom->f;
+  int *type = atom->type;
+  int nlocal = atom->nlocal;
+  int newton_pair = force->newton_pair;
+
+  inum = list->inum;
+  ilist = list->ilist;
+  numneigh = list->numneigh;
+  firstneigh = list->firstneigh;
+
+  for (ii = 0; ii < inum; ii++) {
+    i = list->ilist[ii];
+    double central_atom_pos[3];
+  };
+}
+
+/* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */
 
@@ -90,7 +120,7 @@ void PairMTP::coeff(int narg, char **arg)
 
 void PairMTP::init_style()
 {
-  if (force->newton_pair == 0) error->all(FLERR, "Pair style MTP requires Newton Pair on");
+  if (force->newton_pair != 1) error->all(FLERR, "Pair style MTP requires Newton Pair on");
 
   // Request a full neighbourhood list which is needed for MTP
   neighbor->add_request(this, NeighConst::REQ_FULL);

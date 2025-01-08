@@ -52,6 +52,8 @@ class PairMTP : public Pair {
   double *moment_tensor_vals;
   double *basis_vals;
   double *basis_ders;
+  double buff_site_energy_;
+  double **tmp_site_energy_ders;
 
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
