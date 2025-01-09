@@ -52,8 +52,8 @@ class PairMTP : public Pair {
   double *moment_tensor_vals;
   double *basis_vals;
   double *basis_ders;
-  double buff_site_energy_;
-  double **tmp_site_energy_ders;
+
+  double **nbh_energy_ders;    // Needed for calculating forces
 
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
@@ -61,10 +61,15 @@ class PairMTP : public Pair {
 
   double *linear_coeffs;     // These are the moment tensor basis coeffs (eps)
   double *species_coeffs;    // For the species coefficients (0th rank moment tensor)
-  int alpha_moment_count, alpha_index_basic_count, alpha_index_times_count, alpha_scalar_count;
+  int alpha_moment_count, alpha_index_basic_count, alpha_index_times_count, alpha_scalar_count,
+      max_alpha_index_basic;
   int (*alpha_index_basic)[4];
   int (*alpha_index_times)[4];
   int *alpha_moment_mapping;
+
+  //Working buffer
+  double *dist_powers;
+  double **coord_powers;
 };
 
 }    // namespace LAMMPS_NS

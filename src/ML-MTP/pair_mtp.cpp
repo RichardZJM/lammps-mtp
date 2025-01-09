@@ -74,23 +74,50 @@ void PairMTP::compute(int eflag, int vflag)
   else
     evflag = vflag_fdotr = eflag_global = eflag_atom = 0;
 
-  int *ilist, *jlist, *numneigh, **firstneigh;
-  int i, j, ii, jj, inum, jnum, itype, jtype;
-  double **x = atom->x;
-  double **f = atom->f;
-  int *type = atom->type;
+  int i, j, inum, jnum, itype,
+      jtype;    // index types and counts for working central atom and working target atom
+  double **x = atom->x;      // atomic positons
+  double **f = atom->f;      // atomic forces
+  int *type = atom->type;    //atomic types
+
   int nlocal = atom->nlocal;
   int newton_pair = force->newton_pair;
 
-  inum = list->inum;
-  ilist = list->ilist;
-  numneigh = list->numneigh;
-  firstneigh = list->firstneigh;
+  int inum = list->inum;             // The number of central atoms (neigbhourhoods)
+  int *ilist = list->ilist;          // List of the central atoms in order
+  int *numneigh = list->numneigh;    // List of the number of neighbours for each central atom
+  int **firstneigh =
+      list->firstneigh;    //List  (head of array) of neighbours for a given central atom
 
-  for (ii = 0; ii < inum; ii++) {
-    i = list->ilist[ii];
-    double central_atom_pos[3];
-  };
+  // Loop over all provided neighbourhoods
+  for (int ii = 0; ii < inum; ii++) {
+
+    i = list->ilist[ii];    // Set central atom index
+    jnum = numneigh[i];     // Set number of neighbours
+    memory->grow(nbh_energy_ders, jnum, 3,
+                 "nbh_energy_ders");    // Expand the working derivative list
+    std::fill(&nbh_energy_ders[0][0], &nbh_energy_ders[0][0] + 3 * jnum, 0);
+
+    // ------------ Begin Alpha Basic Calc ------------
+    // Loop over all neighbours
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = firstneigh[i][jj];
+
+      double r[3] = {x[j][0] - x[j][0], x[j][0] - x[j][1], x[j][0] - x[j][2]};
+
+      double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+
+      if (dist_sq > cutsq[i][j])
+        continue;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs. rcutmax could also be used instead
+
+      double dist = std::sqrt(dist_sq);
+      // Precompute the coord and distance power
+      for (int k = 1; k < max_alpha_index_basic; k++) {
+        dist_powers[k] = dist_powers[k - 1] * dist;
+        for (int a = 0; a < 3; a++) coord_powers[k][a] = coord_powers[k - 1][a] * r[a];
+      }
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -143,9 +170,10 @@ double PairMTP::init_one(int i, int j)
 void PairMTP::read_file(char *mtp_file_name)
 {
   //Open the MTP file on proc 0
+  //TODO: NEED TO EXTRACT AND ACCOUNT FOR NON PROC 0
   if (comm->me == 0) {
 
-    // Maybe the read section isn't needed and the potential file reader already handles errors.
+    // Maybe this read section isn't needed and the potential file reader already handles errors.
     FILE *mtp_file;
     mtp_file = utils::open_potential(mtp_file_name, lmp, nullptr);
     if (mtp_file == nullptr)
@@ -265,6 +293,21 @@ void PairMTP::read_file(char *mtp_file_name)
     }
     if (radial_func_max != radial_func_count - 1)    //Index validity check
       error->all(FLERR, "Wrong number of radial functions specified!");
+
+    //Precompute the maximum alpha basic index
+    int max_alpha_index_basic = 0;
+    for (int i = 0; i < alpha_index_basic_count; i++)
+      max_alpha_index_basic =
+          std::max(max_alpha_index_basic,
+                   alpha_index_basic[i][1] + alpha_index_basic[i][2] + alpha_index_basic[i][3]);
+    max_alpha_index_basic++;    // Add 1 to account for zeroth order indicies
+
+    //Allocate the working buffers to the appropriate size.
+    memory->create(dist_powers, max_alpha_index_basic, "distance_power_buffer");
+    memory->create(coord_powers, max_alpha_index_basic, "coordinate_powers_buffer");
+    //Preassign constant values
+    dist_powers[0] = 1;
+    coord_powers[0][0] = coord_powers[0][1] = coord_powers[0][2] = 1;
 
     // Get the alpha times count
     line_tokens = ValueTokenizer(pfr.next_line(), separators);
