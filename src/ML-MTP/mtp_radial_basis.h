@@ -26,8 +26,9 @@ class RadialMTPBasis {
  public:
   int size;    // the size of the radial basis functions
 
-  double min_val;
-  double max_val;
+  int radial_basis_size;
+  double min_cutoff;
+  double max_cutoff;
   double scaling = 1.0;    // all functions are multiplied by scaling
 
   // values and derivatives, set by calc(val)
@@ -45,16 +46,10 @@ class RadialMTPBasis {
   double *radial_basis_vals;
   double *radial_basis_ders;
 
-  virtual void CalcRadialBasis(double val) = 0;
-  virtual void CalcRadialBasisDers(double val) = 0;
+  virtual void calc_radial_basis(double dist) = 0;
+  virtual void calc_radial_basis_ders(double dist) = 0;
 
  protected:
-  //Properties of the radial basis set
-  double scaling = 1.0;
-  double min_cutoff;
-  double max_cutoff;
-  int radial_basis_size;
-
   LAMMPS *lmp;    // LAMMPS reference
 };
 

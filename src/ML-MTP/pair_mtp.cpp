@@ -51,14 +51,16 @@ PairMTP::~PairMTP()
     memory->destroy(setflag);
     memory->destroy(cutsq);
     memory->destroy(moment_tensor_vals);
-    memory->destroy(basis_vals);
-    memory->destroy(basis_ders);
+    memory->destroy(mtp_basis_vals);
+    memory->destroy(mtp_basis_ders);
     memory->destroy(radial_basis_coeffs);
     memory->destroy(linear_coeffs);
     memory->destroy(species_coeffs);
     memory->destroy(alpha_index_basic);
     memory->destroy(alpha_index_times);
     memory->destroy(alpha_moment_mapping);
+    memory->destroy(nbh_energy_ders);
+    memory->destroy(moment_jacobian);
     delete radial_basis;
   }
 }
@@ -93,31 +95,97 @@ void PairMTP::compute(int eflag, int vflag)
   for (int ii = 0; ii < inum; ii++) {
 
     i = list->ilist[ii];    // Set central atom index
-    jnum = numneigh[i];     // Set number of neighbours
+    itype = type[i];        // Set central atom type
+    if (jtype >= species_count)
+      error->all(FLERR,
+                 "Too few species count in the MTP potential!");    // Might not need this check
+    jnum = numneigh[i];                                             // Set number of neighbours
+
+    //Resize lists based on neighbourhood size
     memory->grow(nbh_energy_ders, jnum, 3,
-                 "nbh_energy_ders");    // Expand the working derivative list
-    std::fill(&nbh_energy_ders[0][0], &nbh_energy_ders[0][0] + 3 * jnum, 0);
+                 "nbh_energy_ders");    // Resize the working derivative list
+    std::fill(&nbh_energy_ders[0][0], &nbh_energy_ders[0][0] + 3 * jnum,
+              0);    //Fill with list with 0
+    memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
+                 "moment_jacobian");    // Resize the working jacobian
+    std::fill(&moment_jacobian[0][0], &moment_jacobian[0][0] + 3 * jnum * alpha_index_basic_count,
+              0);    //Fill with jacobian with 0
 
     // ------------ Begin Alpha Basic Calc ------------
     // Loop over all neighbours
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];
+      int jtype = type[j];
+      if (jtype >= species_count)
+        error->all(FLERR,
+                   "Too few species count in the MTP potential!");    // Might not need this check
 
-      double r[3] = {x[j][0] - x[j][0], x[j][0] - x[j][1], x[j][0] - x[j][2]};
+      double r[3] = {x[j][0] - x[i][0], x[j][0] - x[i][1], x[j][0] - x[i][2]};
 
       double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
       if (dist_sq > cutsq[i][j])
-        continue;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs. rcutmax could also be used instead
-
+        continue;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead
       double dist = std::sqrt(dist_sq);
+
       // Precompute the coord and distance power
       for (int k = 1; k < max_alpha_index_basic; k++) {
         dist_powers[k] = dist_powers[k - 1] * dist;
         for (int a = 0; a < 3; a++) coord_powers[k][a] = coord_powers[k - 1][a] * r[a];
       }
+
+      //Calculate the alpha basics
+      for (int k = 0; k < alpha_index_basic_count; k++) {
+        double val, der = 0;
+        int mu = alpha_index_basic[k][0];
+
+        //Find the offset for the radial basis coeffs
+        int pair_offset = itype * species_count + jtype;
+        int offset = pair_offset * radial_basis->size * radial_func_count + mu * radial_basis->size;
+
+        // Calculate radial basis set and find the radial component and its derivative
+        radial_basis->calc_radial_basis_ders(dist);
+        for (int ri = 0; ri < radial_basis->size; ri++) {
+          val += radial_basis_coeffs[offset + ri] * radial_basis->vals[ri];
+          der += radial_basis_coeffs[offset + ri] * radial_basis->ders[ri];
+        }
+
+        // Normalize by the rank of alpha's coresponding tensor
+        int norm_rank = alpha_index_basic[k][1] + alpha_index_basic[k][2] + alpha_index_basic[k][3];
+        double norm_fac = 1.0 / dist_powers[norm_rank];
+        val *= norm_fac;
+        der = der * norm_fac - norm_rank * val / dist;
+
+        // Calculate the alpha tensor component
+        double pow0 = coord_powers[alpha_index_basic[k][1]][0];
+        double pow1 = coord_powers[alpha_index_basic[k][2]][1];
+        double pow2 = coord_powers[alpha_index_basic[k][3]][2];
+        double pow = pow0 * pow1 * pow2;
+        moment_tensor_vals[i] += val * pow;
+
+        // Get the component's derivatives too
+        pow *= der / dist;
+        moment_jacobian[k][j][0] += pow * r[0];
+        moment_jacobian[k][j][1] += pow * r[1];
+        moment_jacobian[k][j][2] += pow * r[2];
+        // Maybe eliminate the if else statments in GPU version?
+        if (alpha_index_basic[k][1] != 0) {
+          moment_jacobian[k][j][0] += val * alpha_index_basic[k][1] *
+              coord_powers[alpha_index_basic[k][1] - 1][0] * pow1 * pow2;
+        }    //Chain rule for nonzero rank
+        if (alpha_index_basic[k][2] != 0) {
+          moment_jacobian[k][j][1] += val * alpha_index_basic[k][2] *
+              coord_powers[alpha_index_basic[k][2] - 1][1] * pow0 * pow2;
+        }    //Chain rule for nonzero rank
+        if (alpha_index_basic[k][3] != 0) {
+          moment_jacobian[k][j][2] += val * alpha_index_basic[k][3] *
+              coord_powers[alpha_index_basic[k][3] - 1][1] * pow0 * pow1;
+        }    //Chain rule for nonzero rank
+      }
     }
   }
+
+  // ------------ Contruct Complex Alphas  ------------
 }
 
 /* ----------------------------------------------------------------------

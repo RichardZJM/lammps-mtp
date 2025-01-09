@@ -50,10 +50,11 @@ class PairMTP : public Pair {
   double rcutmin;
 
   double *moment_tensor_vals;
-  double *basis_vals;
-  double *basis_ders;
-
-  double **nbh_energy_ders;    // Needed for calculating forces
+  double *mtp_basis_vals;
+  double *mtp_basis_ders;
+  // Needed for calculating forces
+  double ***moment_jacobian;
+  double **nbh_energy_ders;
 
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
