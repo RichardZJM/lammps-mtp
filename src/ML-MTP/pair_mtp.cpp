@@ -61,6 +61,7 @@ PairMTP::~PairMTP()
     memory->destroy(alpha_moment_mapping);
     memory->destroy(nbh_energy_ders);
     memory->destroy(moment_jacobian);
+    memory->destroy(nbh_energy_ders_wrt_moments);
     delete radial_basis;
   }
 }
@@ -76,8 +77,6 @@ void PairMTP::compute(int eflag, int vflag)
   else
     evflag = vflag_fdotr = eflag_global = eflag_atom = 0;
 
-  int i, j, inum, jnum, itype,
-      jtype;    // index types and counts for working central atom and working target atom
   double **x = atom->x;      // atomic positons
   double **f = atom->f;      // atomic forces
   int *type = atom->type;    //atomic types
@@ -94,12 +93,13 @@ void PairMTP::compute(int eflag, int vflag)
   // Loop over all provided neighbourhoods
   for (int ii = 0; ii < inum; ii++) {
 
-    i = list->ilist[ii];    // Set central atom index
-    itype = type[i];        // Set central atom type
-    if (jtype >= species_count)
+    int i = list->ilist[ii];    // Set central atom index
+    int itype = type[i];        // Set central atom type
+    if (itype >= species_count)
       error->all(FLERR,
                  "Too few species count in the MTP potential!");    // Might not need this check
-    jnum = numneigh[i];                                             // Set number of neighbours
+    int jnum = numneigh[i];                                         // Set number of neighbours
+    double nbh_energy = 0;
 
     //Resize lists based on neighbourhood size
     memory->grow(nbh_energy_ders, jnum, 3,
@@ -146,8 +146,8 @@ void PairMTP::compute(int eflag, int vflag)
         // Calculate radial basis set and find the radial component and its derivative
         radial_basis->calc_radial_basis_ders(dist);
         for (int ri = 0; ri < radial_basis->size; ri++) {
-          val += radial_basis_coeffs[offset + ri] * radial_basis->vals[ri];
-          der += radial_basis_coeffs[offset + ri] * radial_basis->ders[ri];
+          val += radial_basis_coeffs[offset + ri] * radial_basis->vals[ri] * scaling;
+          der += radial_basis_coeffs[offset + ri] * radial_basis->ders[ri] * scaling;
         }
 
         // Normalize by the rank of alpha's coresponding tensor
@@ -183,9 +183,24 @@ void PairMTP::compute(int eflag, int vflag)
         }    //Chain rule for nonzero rank
       }
     }
-  }
 
-  // ------------ Contruct Complex Alphas  ------------
+    // ------------ Contruct Other Alphas  ------------
+    for (int k = 0; k < alpha_index_times_count; k++) {
+      double val0 = moment_tensor_vals[alpha_index_times[k][0]];
+      double val1 = moment_tensor_vals[alpha_index_times[k][1]];
+      int val2 = alpha_index_times[k][2];
+      moment_tensor_vals[alpha_index_times[k][3]] += val2 * val0 * val1;
+    }
+
+    // ------------ Convolve Basis Set From Alpha Map ------------
+    nbh_energy = species_coeffs[i];    // Essentially reference point energy per species
+    for (int k = 0; k < alpha_scalar_count; k++)
+      nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
+
+    // =========== Begin Backpropogation ===========
+    for (int k = 0; k < alpha_scalar_count; k++)
+      nbh_energy_ders_wrt_moments[alpha_moment_mapping[k]] = linear_coeffs[k];
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -400,6 +415,7 @@ void PairMTP::read_file(char *mtp_file_name)
     if (keyword != "alpha_scalar_moments")
       error->all(FLERR, "Error reading MTP file. Alpha scalar moment count not found.");
     alpha_scalar_count = line_tokens.next_int();
+    memory->create(nbh_energy_ders_wrt_moments, alpha_scalar_count, "nbh_energy_ders_wrt_moments");
 
     //Read the alpha moment mappings
     line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");

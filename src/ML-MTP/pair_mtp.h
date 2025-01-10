@@ -44,8 +44,9 @@ class PairMTP : public Pair {
   std::string potential_name = "Untitled";    //An optional name which isn't currently used.
   std::string potential_tag = "";    //An optional tag/description which isn't currently used.
 
-  int species_count = 1;    // Only 1 species by default
+  int species_count;
 
+  double scaling = 1;
   double rcutmax;
   double rcutmin;
 
@@ -55,6 +56,7 @@ class PairMTP : public Pair {
   // Needed for calculating forces
   double ***moment_jacobian;
   double **nbh_energy_ders;
+  double *nbh_energy_ders_wrt_moments;
 
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
