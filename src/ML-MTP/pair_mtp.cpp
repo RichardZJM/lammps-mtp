@@ -59,7 +59,6 @@ PairMTP::~PairMTP()
     memory->destroy(alpha_index_basic);
     memory->destroy(alpha_index_times);
     memory->destroy(alpha_moment_mapping);
-    memory->destroy(nbh_energy_ders);
     memory->destroy(moment_jacobian);
     memory->destroy(nbh_energy_ders_wrt_moments);
     delete radial_basis;
@@ -100,12 +99,9 @@ void PairMTP::compute(int eflag, int vflag)
                  "Too few species count in the MTP potential!");    // Might not need this check
     int jnum = numneigh[i];                                         // Set number of neighbours
     double nbh_energy = 0;
+    double xi[3] = {x[i][0], x[i][1],
+                    x[i][2]};    // Cache the position of the central atom for efficiency
 
-    //Resize lists based on neighbourhood size
-    memory->grow(nbh_energy_ders, jnum, 3,
-                 "nbh_energy_ders");    // Resize the working derivative list
-    std::fill(&nbh_energy_ders[0][0], &nbh_energy_ders[0][0] + 3 * jnum,
-              0);    //Fill with list with 0
     memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
                  "moment_jacobian");    // Resize the working jacobian
     std::fill(&moment_jacobian[0][0], &moment_jacobian[0][0] + 3 * jnum * alpha_index_basic_count,
@@ -120,7 +116,7 @@ void PairMTP::compute(int eflag, int vflag)
         error->all(FLERR,
                    "Too few species count in the MTP potential!");    // Might not need this check
 
-      double r[3] = {x[j][0] - x[i][0], x[j][0] - x[i][1], x[j][0] - x[i][2]};
+      double r[3] = {x[j][0] - xi[0], x[j][0] - xi[1], x[j][0] - xi[2]};
 
       double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
@@ -193,16 +189,74 @@ void PairMTP::compute(int eflag, int vflag)
     }
 
     // ------------ Convolve Basis Set From Alpha Map ------------
-    nbh_energy = species_coeffs[i];    // Essentially reference point energy per species
+    nbh_energy = species_coeffs[i];    // Essentially the reference point energy per species
     for (int k = 0; k < alpha_scalar_count; k++)
       nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
 
+    // Tally energies per flags
+    if (eflag_atom) eatom[i] = nbh_energy;
+    if (eflag_global) eng_vdwl += nbh_energy;
+
     // =========== Begin Backpropogation ===========
+
+    //------------ Step 1: NBH energy derivative is the corresponding linear combination------------
     for (int k = 0; k < alpha_scalar_count; k++)
       nbh_energy_ders_wrt_moments[alpha_moment_mapping[k]] = linear_coeffs[k];
+
+    //------------ Step 2: Propogate chain rule through the alpha times to the alpha basics ------------
+    for (int k = alpha_index_times_count - 1; k >= 0; k--) {
+      double val0 = moment_tensor_vals[alpha_index_times[k][0]];
+      double val1 = moment_tensor_vals[alpha_index_times[k][1]];
+      int val2 = alpha_index_times[k][2];
+
+      nbh_energy_ders_wrt_moments[alpha_index_times[k][1]] +=
+          nbh_energy_ders_wrt_moments[alpha_index_times[k][3]] * val2 * val0;
+      nbh_energy_ders_wrt_moments[alpha_index_times[k][0]] +=
+          nbh_energy_ders_wrt_moments[alpha_index_times[k][3]] * val2 * val1;
+    }
+
+    //------------ Step 3: Multiply energy ders wrt moment by the Jacobian to get forces ------------
+    for (int k = 0; k < alpha_index_basic_count; k++)
+      for (int jj = 0; jj < jnum; jj++) {
+        int j = firstneigh[i][jj];
+        j &= NEIGHMASK;
+        double temp_force[3] = {0, 0, 0};
+        for (int a = 0; a < 3; a++) {
+          //Calculate forces
+          temp_force[a] = nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][j][a];
+          // Maybe need to look at the newton pair here.
+          f[i][a] += temp_force[a];
+          f[j][a] -= temp_force[a];
+        }
+
+        //Calculate virial stress
+        if (vflag) {
+          double r[3] = {x[j][0] - xi[0], x[j][0] - xi[1], x[j][0] - xi[2]};
+
+          virial[0] -= temp_force[0] * r[0];    //xx
+          virial[1] -= temp_force[1] * r[1];    //yy
+          virial[2] -= temp_force[2] * r[2];    //zz
+
+          virial[3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]) / 2;    //xy
+          virial[4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]) / 2;    //xz
+          virial[5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]) / 2;    //yz
+
+          //This can be more efficient but I'm not sure if it's even needed.
+          if (vflag_atom) {
+            vatom[i][0] -= temp_force[0] * r[0];    //xx
+            vatom[i][1] -= temp_force[1] * r[1];    //yy
+            vatom[i][2] -= temp_force[2] * r[2];    //zz
+
+            vatom[i][3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]) / 2;    //xy
+            vatom[i][4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]) / 2;    //xz
+            vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]) / 2;
+          }
+        }
+      }
+
+    if (vflag_fdotr) virial_fdotr_compute();
   }
 }
-
 /* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */

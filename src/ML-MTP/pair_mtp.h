@@ -55,7 +55,6 @@ class PairMTP : public Pair {
   double *mtp_basis_ders;
   // Needed for calculating forces
   double ***moment_jacobian;
-  double **nbh_energy_ders;
   double *nbh_energy_ders_wrt_moments;
 
   RadialMTPBasis *radial_basis;
