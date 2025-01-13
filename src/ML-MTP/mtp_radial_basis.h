@@ -18,12 +18,25 @@
 #ifndef LMP_MTP_RADIAL_BASIS_H
 #define LMP_MTP_RADIAL_BASIS_H
 
-#include <potential_file_reader.h>
+#include "potential_file_reader.h"
 
 namespace LAMMPS_NS {
 
 class RadialMTPBasis {
  public:
+  // values and derivatives, set by calc(val)
+  std::vector<double> vals;
+  std::vector<double> ders;
+
+  RadialMTPBasis(PotentialFileReader &pfr, LAMMPS *lmp);
+  ~RadialMTPBasis();    // Needed to clear memory
+
+  //Specifically reads the basis properties (ie. cutoffs and size) and not the radial parameters
+  void ReadBasisProperties(PotentialFileReader &pfr);
+
+  virtual void calc_radial_basis(double dist) = 0;
+  virtual void calc_radial_basis_ders(double dist) = 0;
+
   int size;    // the size of the radial basis functions
 
   int radial_basis_size;
@@ -31,23 +44,9 @@ class RadialMTPBasis {
   double max_cutoff;
   double scaling = 1.0;    // all functions are multiplied by scaling
 
-  // values and derivatives, set by calc(val)
-  std::vector<double> vals;
-  std::vector<double> ders;
-
- public:
-  RadialMTPBasis(PotentialFileReader &pfr, LAMMPS *lmp);
-  ~RadialMTPBasis();    // Needed to clear memory
-
-  //Specifically reads the basis properties (ie. cutoffs and size) and not the radial parameters
-  void ReadBasisProperties(PotentialFileReader &pfr);
-
   // Values and derivatives for radial basis functions
   double *radial_basis_vals;
   double *radial_basis_ders;
-
-  virtual void calc_radial_basis(double dist) = 0;
-  virtual void calc_radial_basis_ders(double dist) = 0;
 
  protected:
   LAMMPS *lmp;    // LAMMPS reference

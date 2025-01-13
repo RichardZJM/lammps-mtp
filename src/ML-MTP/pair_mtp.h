@@ -24,6 +24,7 @@ PairStyle(mtp,PairMTP);
 #ifndef LMP_PAIR_MTP_H
 #define LMP_PAIR_MTP_H
 
+#include "mtp_radial_basis.h"
 #include "pair.h"
 
 namespace LAMMPS_NS {
@@ -53,9 +54,6 @@ class PairMTP : public Pair {
   double *moment_tensor_vals;
   double *mtp_basis_vals;
   double *mtp_basis_ders;
-  // Needed for calculating forces
-  double ***moment_jacobian;
-  double *nbh_energy_ders_wrt_moments;
 
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
@@ -69,14 +67,14 @@ class PairMTP : public Pair {
   int (*alpha_index_times)[4];
   int *alpha_moment_mapping;
 
-  //Working buffer
+  //Working buffers
   double *dist_powers;
   double **coord_powers;
+  double ***moment_jacobian;
+  double *nbh_energy_ders_wrt_moments;
 };
 
 }    // namespace LAMMPS_NS
-
-/* the definition of the PairBornGauss class (see below) is inserted here */
 
 #endif
 #endif

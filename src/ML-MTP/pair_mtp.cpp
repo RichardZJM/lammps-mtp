@@ -62,6 +62,7 @@ PairMTP::~PairMTP()
     memory->destroy(moment_jacobian);
     memory->destroy(nbh_energy_ders_wrt_moments);
     delete radial_basis;
+    radial_basis = nullptr;
   }
 }
 
@@ -104,8 +105,9 @@ void PairMTP::compute(int eflag, int vflag)
 
     memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
                  "moment_jacobian");    // Resize the working jacobian
-    std::fill(&moment_jacobian[0][0], &moment_jacobian[0][0] + 3 * jnum * alpha_index_basic_count,
-              0);    //Fill with jacobian with 0
+    std::fill(&moment_jacobian[0][0][0],
+              &moment_jacobian[0][0][0] + 3 * jnum * alpha_index_basic_count,
+              0.0);    //Fill with jacobian with 0
 
     // ------------ Begin Alpha Basic Calc ------------
     // Loop over all neighbours
@@ -317,7 +319,8 @@ void PairMTP::read_file(char *mtp_file_name)
       error->one(FLERR, "Cannot open MTP file {}: ", mtp_file_name, utils::getsyserror());
 
     PotentialFileReader pfr{lmp, mtp_file_name, "ml-mtp"};
-    std::string separators = TOKENIZER_DEFAULT_SEPARATORS + '=,';
+    std::string new_separators = "=,";
+    std::string separators = TOKENIZER_DEFAULT_SEPARATORS + new_separators;
 
     ValueTokenizer line_tokens = ValueTokenizer(std::string(pfr.next_line()), separators);
     std::string keyword = line_tokens.next_string();

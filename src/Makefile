@@ -100,6 +100,7 @@ PACKAGE = \
 	mgpt \
 	misc \
 	ml-hdnnp \
+	ml-mtp \
 	ml-pace \
 	ml-pod \
 	ml-quip \
@@ -184,6 +185,7 @@ PACKMOST = \
 	meam \
 	mesont \
 	misc \
+	ml-mtp \
 	ml-snap \
 	mofff \
 	openmp \

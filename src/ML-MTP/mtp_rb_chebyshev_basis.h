@@ -18,7 +18,7 @@
 #ifndef LMP_MTP_RB_CHEBYSHEV_BASIS_H
 #define LMP_MTP_RB_CHEBYSHEV_BASIS_H
 
-#include <mtp_radial_basis.h>
+#include "mtp_radial_basis.h"
 
 namespace LAMMPS_NS {
 class RBChebyshev : public RadialMTPBasis {
