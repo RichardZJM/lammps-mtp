@@ -95,7 +95,7 @@ void PairMTP::compute(int eflag, int vflag)
   for (int ii = 0; ii < inum; ii++) {
 
     int i = list->ilist[ii];    // Set central atom index
-    int itype = type[i];        // Set central atom type
+    int itype = type[i] - 1;    // Set central atom type. Convert back to zero indexing.
     if (itype >= species_count)
       error->all(FLERR,
                  "Too few species count in the MTP potential!");    // Might not need this check
@@ -113,8 +113,8 @@ void PairMTP::compute(int eflag, int vflag)
     // ------------ Begin Alpha Basic Calc ------------
     // Loop over all neighbours
     for (int jj = 0; jj < jnum; jj++) {
-      int j = firstneigh[i][jj];
-      int jtype = type[j];
+      int j = firstneigh[i][jj];    //List of neighbours
+      int jtype = type[j] - 1;      // Convert back to zero indexing
       if (jtype >= species_count)
         error->all(FLERR,
                    "Too few species count in the MTP potential!");    // Might not need this check
@@ -300,7 +300,7 @@ void PairMTP::init_style()
 
 double PairMTP::init_one(int i, int j)
 {
-  if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set");
+  if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set. {}{}", i, j);
 
   return radial_basis->max_cutoff;
 }
@@ -364,8 +364,9 @@ void PairMTP::read_file(char *mtp_file_name)
     species_count = line_tokens.next_int();
     utils::logmesg(lmp, "There are {} species.\n", species_count);
 
-    memory->create(setflag, species_count, species_count, "pair:setflag");
-    memory->create(cutsq, species_count, species_count, "pair:cutsq");
+    int np1 = species_count + 1;    // Lammps is 1 indexed instead of MLIP which is 0 indexed
+    memory->create(setflag, np1, np1, "pair:setflag");
+    memory->create(cutsq, np1, np1, "pair:cutsq");
 
     // Read the potential tag (also optional)
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
@@ -425,8 +426,8 @@ void PairMTP::read_file(char *mtp_file_name)
       line_tokens = ValueTokenizer(tfr.next_line(), separators + "-");
       int type1 = line_tokens.next_int();
       int type2 = line_tokens.next_int();
-      setflag[type1][type2] = 1;          // Make sure the setflag is set
-      cutsq[type1][type2] = rcutmaxsq;    // Make sure the cutsq is set
+      setflag[type1 + 1][type2 + 1] = 1;          // Make sure the setflag is set
+      cutsq[type1 + 1][type2 + 1] = rcutmaxsq;    // Make sure the cutsq is set
 
       // Read the coeffs for the pair. First find the offset in the array pointer.
       int pair_offset = (type1 * species_count + type2) * radial_coeff_count_per_pair;
@@ -457,10 +458,12 @@ void PairMTP::read_file(char *mtp_file_name)
 
     // Read the basic alphas
     int radial_func_max = 0;
+    tfr.set_bufsize(
+        (alpha_index_basic_count * 20 + 20) *
+        sizeof(
+            char));    // Adjust the buffer size. This needed to ensure cross-compatability since the MLIP files stores all the alpha indicies on the same line for some reason.
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
 
-    size_t tokenCount = line_tokens.count();
-    utils::logmesg(lmp, "\n\n{}!\n\n", (int) tokenCount);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_basic")
       error->all(FLERR, "Error reading MTP file. Alpha index basic not found.");
@@ -470,7 +473,6 @@ void PairMTP::read_file(char *mtp_file_name)
         int index = line_tokens.next_int();
         alpha_index_basic[i][j] = index;
       }
-      if (i == 20) raise(SIGTRAP);    // For debugging
       if (alpha_index_basic[i][0] > radial_func_max) radial_func_max = alpha_index_basic[i][0];
     }
     if (radial_func_max != radial_func_count - 1)    //Index validity check
@@ -486,10 +488,9 @@ void PairMTP::read_file(char *mtp_file_name)
 
     //Allocate the working buffers to the appropriate size.
     memory->create(dist_powers, max_alpha_index_basic, "distance_power_buffer");
-    memory->create(coord_powers, max_alpha_index_basic, "coordinate_powers_buffer");
+    memory->create(coord_powers, max_alpha_index_basic, 3, "coordinate_powers_buffer");
     //Preassign constant values
-    dist_powers[0] = 1;
-    coord_powers[0][0] = coord_powers[0][1] = coord_powers[0][2] = 1;
+    dist_powers[0] = coord_powers[0][0] = coord_powers[0][1] = coord_powers[0][2] = 1;
 
     // Get the alpha times count
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
@@ -499,6 +500,10 @@ void PairMTP::read_file(char *mtp_file_name)
     alpha_index_times_count = line_tokens.next_int();
 
     // Read the alphas times
+    tfr.set_bufsize(
+        (alpha_index_times_count * 32 + 20) *
+        sizeof(
+            char));    // Adjust the buffer size. This needed to ensure cross-compatability since the MLIP files stores all the alpha indicies on the same line for some reason.
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_times")
@@ -535,16 +540,6 @@ void PairMTP::read_file(char *mtp_file_name)
     memory->create(species_coeffs, species_count, "species_coeffs");
     for (int i = 0; i < species_count; i++) { species_coeffs[i] = line_tokens.next_double(); }
 
-    //Read the alpha moment mappings
-    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
-    keyword = line_tokens.next_string();
-    if (keyword != "alpha_moment_mapping")
-      error->all(FLERR, "Error reading MTP file. Alpha moment mappings not found.");
-    memory->create(alpha_moment_mapping, alpha_scalar_count, "alpha_moment_mapping");
-    for (int i = 0; i < alpha_scalar_count; i++) {
-      alpha_moment_mapping[i] = line_tokens.next_int();
-    }
-
     //Read the linear MTP basis coefficients
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
@@ -552,5 +547,7 @@ void PairMTP::read_file(char *mtp_file_name)
       error->all(FLERR, "Error reading MTP file. Moment coefficients not found.");
     memory->create(linear_coeffs, alpha_scalar_count, "moment_coeffs");
     for (int i = 0; i < alpha_scalar_count; i++) { linear_coeffs[i] = line_tokens.next_double(); }
+
+    allocated = 1;
   }
 }
