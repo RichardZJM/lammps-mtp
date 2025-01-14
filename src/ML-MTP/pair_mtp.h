@@ -48,8 +48,6 @@ class PairMTP : public Pair {
   int species_count;
 
   double scaling = 1;
-  double rcutmax;
-  double rcutmin;
 
   double *moment_tensor_vals;
   double *mtp_basis_vals;
@@ -63,8 +61,8 @@ class PairMTP : public Pair {
   double *species_coeffs;    // For the species coefficients (0th rank moment tensor)
   int alpha_moment_count, alpha_index_basic_count, alpha_index_times_count, alpha_scalar_count,
       max_alpha_index_basic;
-  int (*alpha_index_basic)[4];
-  int (*alpha_index_times)[4];
+  int **alpha_index_basic;
+  int **alpha_index_times;
   int *alpha_moment_mapping;
 
   //Working buffers

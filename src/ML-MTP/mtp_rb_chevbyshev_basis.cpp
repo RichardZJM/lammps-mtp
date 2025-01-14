@@ -20,7 +20,6 @@
 
 #include "error.h"
 #include "memory.h"
-#include "potential_file_reader.h"
 #include "utils.h"
 
 #include "cstring"

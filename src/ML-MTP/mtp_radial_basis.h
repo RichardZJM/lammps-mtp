@@ -28,18 +28,18 @@ class RadialMTPBasis {
   std::vector<double> vals;
   std::vector<double> ders;
 
-  RadialMTPBasis(PotentialFileReader &pfr, LAMMPS *lmp);
+  int allocated = 0;
+
+  RadialMTPBasis(TextFileReader &tfr, LAMMPS *lmp);
   ~RadialMTPBasis();    // Needed to clear memory
 
   //Specifically reads the basis properties (ie. cutoffs and size) and not the radial parameters
-  void ReadBasisProperties(PotentialFileReader &pfr);
+  void ReadBasisProperties(TextFileReader &tfr);
 
   virtual void calc_radial_basis(double dist) = 0;
   virtual void calc_radial_basis_ders(double dist) = 0;
 
   int size;    // the size of the radial basis functions
-
-  int radial_basis_size;
   double min_cutoff;
   double max_cutoff;
   double scaling = 1.0;    // all functions are multiplied by scaling

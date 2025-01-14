@@ -20,32 +20,34 @@
 #include "error.h"
 #include "memory.h"
 #include "potential_file_reader.h"
+#include "text_file_reader.h"
 #include "utils.h"
 
 #include "cstring"
 
 using namespace LAMMPS_NS;
 
-RadialMTPBasis::RadialMTPBasis(PotentialFileReader &pfr, LAMMPS *lmp)
+RadialMTPBasis::RadialMTPBasis(TextFileReader &tfr, LAMMPS *lmp)
 {
   this->lmp = lmp;
 
   //Clear out old arrays if any
-  lmp->memory->destroy(radial_basis_vals);
-  lmp->memory->destroy(radial_basis_ders);
+  if (allocated) {
+    lmp->memory->destroy(radial_basis_vals);
+    lmp->memory->destroy(radial_basis_ders);
+  }
 
-  pfr.ignore_comments(true);    //Ignore comments in MTP file
-  ReadBasisProperties(pfr);
+  ReadBasisProperties(tfr);
 }
 
-void RadialMTPBasis::ReadBasisProperties(PotentialFileReader &pfr)
+void RadialMTPBasis::ReadBasisProperties(TextFileReader &tfr)
 {
 
-  const int buffersize = 256;
-  char *buffer[buffersize];
+  std::string new_separators = "=, ";
+  std::string separators = TOKENIZER_DEFAULT_SEPARATORS + new_separators;
 
   //Extact next line and it's tokens
-  ValueTokenizer line_tokens{std::string(pfr.next_line())};
+  ValueTokenizer line_tokens{std::string(tfr.next_line()), separators};
   std::string keyword = line_tokens.next_string();
 
   // First check if scaling is available
@@ -53,7 +55,7 @@ void RadialMTPBasis::ReadBasisProperties(PotentialFileReader &pfr)
     //If available alert the user and extract the next lines
     scaling = line_tokens.next_double();
     utils::logmesg(lmp, "MTP Scaling Value = {} ", scaling);
-    line_tokens = ValueTokenizer(std::string(pfr.next_line()));
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
     keyword = line_tokens.next_string();
   }
 
@@ -63,22 +65,22 @@ void RadialMTPBasis::ReadBasisProperties(PotentialFileReader &pfr)
   min_cutoff = line_tokens.next_double();
 
   // Read the upper cutoff
-  line_tokens = ValueTokenizer(std::string(pfr.next_line()));
+  line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
   keyword = line_tokens.next_string();
   if (keyword != "max_val" && keyword != "max_dist")
     lmp->error->all(FLERR, "Error in reading MTP file. Cannot read upper cutoff.");
   max_cutoff = line_tokens.next_double();
 
   // Read the basis size set value
-  line_tokens = ValueTokenizer(std::string(pfr.next_line()));
+  line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
   keyword = line_tokens.next_string();
-  if (keyword != "max_val" && keyword != "max_dist")
-    lmp->error->all(FLERR, "Error in reading MTP file. Cannot read upper cutoff.");
-  radial_basis_size = line_tokens.next_int();    // Assuming size is an int
+  if (keyword != "radial_basis_size")
+    lmp->error->all(FLERR, "Error in reading MTP file. Cannot read radial basis set size.");
+  size = line_tokens.next_int();    // Assuming size is an int
 
   //Allocate the memory for the basis set values and deriviatives.
-  lmp->memory->create(radial_basis_vals, radial_basis_size, "pair:mtp_radial_vals");
-  lmp->memory->create(radial_basis_ders, radial_basis_size, "pair:,mtp_radial_ders");
+  lmp->memory->create(radial_basis_vals, size, "pair:mtp_radial_vals");
+  lmp->memory->create(radial_basis_ders, size, "pair:,mtp_radial_ders");
 }
 RadialMTPBasis::~RadialMTPBasis()
 {

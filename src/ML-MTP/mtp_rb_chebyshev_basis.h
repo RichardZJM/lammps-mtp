@@ -19,11 +19,12 @@
 #define LMP_MTP_RB_CHEBYSHEV_BASIS_H
 
 #include "mtp_radial_basis.h"
+#include "text_file_reader.h"
 
 namespace LAMMPS_NS {
 class RBChebyshev : public RadialMTPBasis {
  public:
-  RBChebyshev(PotentialFileReader &pfr, LAMMPS *lmp) : RadialMTPBasis(pfr, lmp) {}
+  RBChebyshev(TextFileReader &tfr, LAMMPS *lmp) : RadialMTPBasis(tfr, lmp) {}
   virtual void calc_radial_basis(double val) override;
   virtual void calc_radial_basis_ders(double val) override;
 };

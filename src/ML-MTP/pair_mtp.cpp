@@ -29,6 +29,7 @@
 #include "neighbor.h"
 
 #include <cmath>
+#include <csignal>
 #include <cstring>
 
 using namespace LAMMPS_NS;
@@ -122,8 +123,9 @@ void PairMTP::compute(int eflag, int vflag)
 
       double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
-      if (dist_sq > cutsq[i][j])
-        continue;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead
+      if (dist_sq > cutsq[i][j]) continue;
+      continue;
+      ;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead
       double dist = std::sqrt(dist_sq);
       radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
 
@@ -300,7 +302,7 @@ double PairMTP::init_one(int i, int j)
 {
   if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set");
 
-  return rcutmax;
+  return radial_basis->max_cutoff;
 }
 
 /* ----------------------------------------------------------------------
@@ -318,21 +320,21 @@ void PairMTP::read_file(char *mtp_file_name)
     if (mtp_file == nullptr)
       error->one(FLERR, "Cannot open MTP file {}: ", mtp_file_name, utils::getsyserror());
 
-    PotentialFileReader pfr{lmp, mtp_file_name, "ml-mtp"};
+    TextFileReader tfr(mtp_file_name, "ml-mtp");
     std::string new_separators = "=, ";
     std::string separators = TOKENIZER_DEFAULT_SEPARATORS + new_separators;
 
-    ValueTokenizer line_tokens = ValueTokenizer(std::string(pfr.next_line()), separators);
+    ValueTokenizer line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
     std::string keyword = line_tokens.next_string();
 
     if (keyword != "MTP")    // Files checking
       error->all(FLERR, "Only MTP potential files are accepted.");
-    std::string version_line = std::string(pfr.next_line());
+    std::string version_line = std::string(tfr.next_line());
     if (version_line != "version = 1.1.0\n")    // Version checking
       error->all(FLERR, "MTP file must have version \"1.1.0\"");
 
     // Read the potential name (optional)
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
 
     if (keyword == "potential_name") {
@@ -341,14 +343,14 @@ void PairMTP::read_file(char *mtp_file_name)
       } catch (TokenizerException e) {
         potential_name = "";
       }
-      line_tokens = ValueTokenizer(pfr.next_line(), separators);
+      line_tokens = ValueTokenizer(tfr.next_line(), separators);
       keyword = line_tokens.next_string();
     }
 
     //Check the scaling
     if (keyword == "scaling") {
       scaling = line_tokens.next_double();
-      line_tokens = ValueTokenizer(pfr.next_line(), separators);
+      line_tokens = ValueTokenizer(tfr.next_line(), separators);
       keyword = line_tokens.next_string();
     } else {
       scaling = 1;
@@ -362,8 +364,11 @@ void PairMTP::read_file(char *mtp_file_name)
     species_count = line_tokens.next_int();
     utils::logmesg(lmp, "There are {} species.\n", species_count);
 
+    memory->create(setflag, species_count, species_count, "pair:setflag");
+    memory->create(cutsq, species_count, species_count, "pair:cutsq");
+
     // Read the potential tag (also optional)
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword == "potential_tag") {
       try {
@@ -371,7 +376,7 @@ void PairMTP::read_file(char *mtp_file_name)
       } catch (TokenizerException e) {
         potential_tag = "";
       }
-      line_tokens = ValueTokenizer(pfr.next_line(), separators);
+      line_tokens = ValueTokenizer(tfr.next_line(), separators);
       keyword = line_tokens.next_string();
     }
 
@@ -382,23 +387,29 @@ void PairMTP::read_file(char *mtp_file_name)
 
     // Set the type of radial basis. No switch/case with strings...
     if (radial_basis_name == "RBChebyshev") {
-      radial_basis = new RBChebyshev(pfr, lmp);
+      radial_basis = new RBChebyshev(tfr, lmp);
       radial_basis->scaling = scaling;
     } else
       error->all(FLERR,
                  "Error reading MTP file. The specified radial basis set type, {}, was not found..",
                  radial_basis_name);
 
+    // Read the basis function count
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "radial_funcs_count")
+      lmp->error->all(FLERR, "Error in reading MTP file. Cannot read radial function count.");
+    radial_func_count = line_tokens.next_int();    // Assuming count is an int
+
     // Check for magnetic basis which is currently unsupported.
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "radial_coeffs") {
-      error->all(FLERR, "Initializing new potentials is currently not supported.");
+      if (keyword == "magnetic_basis_type")
+        error->all(FLERR, "Magnetic basis is currently not supported.");
+      else
+        error->all(FLERR, "Error in reading MTP file. Cannot read radial coeffs count.");
     }
-
-    // Get the radial function count
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
-    radial_func_count = line_tokens.next_int();
 
     // Allocate memory for radial basis
     int pairs_count = species_count * species_count;
@@ -408,29 +419,37 @@ void PairMTP::read_file(char *mtp_file_name)
                    "radial_basis_coeffs");
 
     // Read the radial basis coeffs
+    double rcutmaxsq = radial_basis->max_cutoff * radial_basis->max_cutoff;
     for (int i = 0; i < pairs_count; i++) {
       //Read which pairs are being allocated
-      line_tokens = ValueTokenizer(pfr.next_line(), separators + "-");
+      line_tokens = ValueTokenizer(tfr.next_line(), separators + "-");
       int type1 = line_tokens.next_int();
       int type2 = line_tokens.next_int();
-      setflag[type1][type2] = 1;    // Make sure the setflag is set
+      setflag[type1][type2] = 1;          // Make sure the setflag is set
+      cutsq[type1][type2] = rcutmaxsq;    // Make sure the cutsq is set
 
       // Read the coeffs for the pair. First find the offset in the array pointer.
-      int pair_offset = type1 * species_count + type2;
-      int offset = pair_offset * radial_coeff_count_per_pair;
+      int pair_offset = (type1 * species_count + type2) * radial_coeff_count_per_pair;
 
-      pfr.next_dvector(radial_basis_coeffs, radial_coeff_count_per_pair);
+      // Read all the coefficients
+      for (int j = 0; j < radial_func_count; j++) {
+        line_tokens = ValueTokenizer(tfr.next_line(), separators + "{,}");
+        for (int k = 0; k < radial_basis->size; k++) {
+          radial_basis_coeffs[pair_offset + (j * radial_basis->size) + i] =
+              line_tokens.next_double();
+        }
+      }
     }
 
     // Get the total alpha count
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_moments_count")
       error->all(FLERR, "Error reading MTP file. Alpha moment count not found.");
     alpha_moment_count = line_tokens.next_int();
 
     // Get the basic alpha count
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_basic_count")
       error->all(FLERR, "Error reading MTP file. Alpha moment count not found.");
@@ -438,13 +457,20 @@ void PairMTP::read_file(char *mtp_file_name)
 
     // Read the basic alphas
     int radial_func_max = 0;
-    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
+
+    size_t tokenCount = line_tokens.count();
+    utils::logmesg(lmp, "\n\n{}!\n\n", (int) tokenCount);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_basic")
       error->all(FLERR, "Error reading MTP file. Alpha index basic not found.");
-    memory->create(alpha_index_basic, alpha_index_basic_count, "alpha_index_basic");
+    memory->create(alpha_index_basic, alpha_index_basic_count, 4, "alpha_index_basic");
     for (int i = 0; i < alpha_index_basic_count; i++) {
-      for (int j = 0; j < 4; j++) { alpha_index_basic[i][j] = line_tokens.next_int(); }
+      for (int j = 0; j < 4; j++) {
+        int index = line_tokens.next_int();
+        alpha_index_basic[i][j] = index;
+      }
+      if (i == 20) raise(SIGTRAP);    // For debugging
       if (alpha_index_basic[i][0] > radial_func_max) radial_func_max = alpha_index_basic[i][0];
     }
     if (radial_func_max != radial_func_count - 1)    //Index validity check
@@ -466,24 +492,24 @@ void PairMTP::read_file(char *mtp_file_name)
     coord_powers[0][0] = coord_powers[0][1] = coord_powers[0][2] = 1;
 
     // Get the alpha times count
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_times_count")
       error->all(FLERR, "Error reading MTP file. Alpha index times count not found.");
     alpha_index_times_count = line_tokens.next_int();
 
     // Read the alphas times
-    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_times")
       error->all(FLERR, "Error reading MTP file. Alpha index times not found.");
-    memory->create(alpha_index_times, alpha_index_times_count, "alpha_index_times");
+    memory->create(alpha_index_times, alpha_index_times_count, 4, "alpha_index_times");
     for (int i = 0; i < alpha_index_times_count; i++) {
       for (int j = 0; j < 4; j++) { alpha_index_times[i][j] = line_tokens.next_int(); }
     }
 
     // Get the alpha scalar count
-    line_tokens = ValueTokenizer(pfr.next_line(), separators);
+    line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_scalar_moments")
       error->all(FLERR, "Error reading MTP file. Alpha scalar moment count not found.");
@@ -491,7 +517,7 @@ void PairMTP::read_file(char *mtp_file_name)
     memory->create(nbh_energy_ders_wrt_moments, alpha_scalar_count, "nbh_energy_ders_wrt_moments");
 
     //Read the alpha moment mappings
-    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_moment_mapping")
       error->all(FLERR, "Error reading MTP file. Alpha moment mappings not found.");
@@ -502,7 +528,7 @@ void PairMTP::read_file(char *mtp_file_name)
     // alpha_scalar_count++;    // The 0th rank tensor scalar is accounted for by the species coefficients
 
     //Read the species coefficients
-    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "species_coeffs")
       error->all(FLERR, "Error reading MTP file. Species coefficients not found.");
@@ -510,7 +536,7 @@ void PairMTP::read_file(char *mtp_file_name)
     for (int i = 0; i < species_count; i++) { species_coeffs[i] = line_tokens.next_double(); }
 
     //Read the alpha moment mappings
-    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_moment_mapping")
       error->all(FLERR, "Error reading MTP file. Alpha moment mappings not found.");
@@ -520,7 +546,7 @@ void PairMTP::read_file(char *mtp_file_name)
     }
 
     //Read the linear MTP basis coefficients
-    line_tokens = ValueTokenizer(pfr.next_line(), separators + "{},");
+    line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "moment_coeffs")
       error->all(FLERR, "Error reading MTP file. Moment coefficients not found.");
