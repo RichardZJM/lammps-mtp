@@ -125,6 +125,7 @@ void PairMTP::compute(int eflag, int vflag)
       if (dist_sq > cutsq[i][j])
         continue;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead
       double dist = std::sqrt(dist_sq);
+      radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
 
       // Precompute the coord and distance power
       for (int k = 1; k < max_alpha_index_basic; k++) {
@@ -141,11 +142,10 @@ void PairMTP::compute(int eflag, int vflag)
         int pair_offset = itype * species_count + jtype;
         int offset = pair_offset * radial_basis->size * radial_func_count + mu * radial_basis->size;
 
-        // Calculate radial basis set and find the radial component and its derivative
-        radial_basis->calc_radial_basis_ders(dist);
+        // Find the radial component and its derivative
         for (int ri = 0; ri < radial_basis->size; ri++) {
-          val += radial_basis_coeffs[offset + ri] * radial_basis->vals[ri] * scaling;
-          der += radial_basis_coeffs[offset + ri] * radial_basis->ders[ri] * scaling;
+          val += radial_basis_coeffs[offset + ri] * radial_basis->vals[ri];
+          der += radial_basis_coeffs[offset + ri] * radial_basis->ders[ri];
         }
 
         // Normalize by the rank of alpha's coresponding tensor
@@ -319,42 +319,57 @@ void PairMTP::read_file(char *mtp_file_name)
       error->one(FLERR, "Cannot open MTP file {}: ", mtp_file_name, utils::getsyserror());
 
     PotentialFileReader pfr{lmp, mtp_file_name, "ml-mtp"};
-    std::string new_separators = "=,";
+    std::string new_separators = "=, ";
     std::string separators = TOKENIZER_DEFAULT_SEPARATORS + new_separators;
 
     ValueTokenizer line_tokens = ValueTokenizer(std::string(pfr.next_line()), separators);
     std::string keyword = line_tokens.next_string();
 
-    if (keyword != "MTP")    // Version checking
+    if (keyword != "MTP")    // Files checking
       error->all(FLERR, "Only MTP potential files are accepted.");
     std::string version_line = std::string(pfr.next_line());
-    if (version_line != "version = 1.1.0")    // Version checking
+    if (version_line != "version = 1.1.0\n")    // Version checking
       error->all(FLERR, "MTP file must have version \"1.1.0\"");
 
     // Read the potential name (optional)
     line_tokens = ValueTokenizer(pfr.next_line(), separators);
     keyword = line_tokens.next_string();
-    if (keyword != "potential_name") {
+
+    if (keyword == "potential_name") {
       try {
         potential_name = line_tokens.next_string();
       } catch (TokenizerException e) {
+        potential_name = "";
       }
       line_tokens = ValueTokenizer(pfr.next_line(), separators);
       keyword = line_tokens.next_string();
     }
 
+    //Check the scaling
+    if (keyword == "scaling") {
+      scaling = line_tokens.next_double();
+      line_tokens = ValueTokenizer(pfr.next_line(), separators);
+      keyword = line_tokens.next_string();
+    } else {
+      scaling = 1;
+    }
+
+    utils::logmesg(lmp, "The scaling is : {:.2e}.\n", scaling);
+
     // Read the species count
     if (keyword != "species_count")
       error->all(FLERR, "Error reading MTP file. Species count not found.");
     species_count = line_tokens.next_int();
+    utils::logmesg(lmp, "There are {} species.\n", species_count);
 
     // Read the potential tag (also optional)
     line_tokens = ValueTokenizer(pfr.next_line(), separators);
     keyword = line_tokens.next_string();
-    if (keyword != "potential_tag") {
+    if (keyword == "potential_tag") {
       try {
         potential_tag = line_tokens.next_string();
       } catch (TokenizerException e) {
+        potential_tag = "";
       }
       line_tokens = ValueTokenizer(pfr.next_line(), separators);
       keyword = line_tokens.next_string();
@@ -362,13 +377,14 @@ void PairMTP::read_file(char *mtp_file_name)
 
     // Read the radial basis type
     if (keyword != "radial_basis_type")
-      error->all(FLERR, "Error reading MTP file. Not radial basis set type is specified.");
+      error->all(FLERR, "Error reading MTP file. No radial basis set type is specified.");
     std::string radial_basis_name = line_tokens.next_string();
 
     // Set the type of radial basis. No switch/case with strings...
-    if (radial_basis_name == "RBChebyshev")
+    if (radial_basis_name == "RBChebyshev") {
       radial_basis = new RBChebyshev(pfr, lmp);
-    else
+      radial_basis->scaling = scaling;
+    } else
       error->all(FLERR,
                  "Error reading MTP file. The specified radial basis set type, {}, was not found..",
                  radial_basis_name);
