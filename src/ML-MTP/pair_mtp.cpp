@@ -30,8 +30,6 @@
 
 #include <cmath>
 #include <csignal>
-#include <cstring>
-#include <iostream>
 
 using namespace LAMMPS_NS;
 
@@ -161,10 +159,6 @@ void PairMTP::compute(int eflag, int vflag)
         val *= norm_fac;
         der = der * norm_fac - norm_rank * val / dist;
 
-        // Calculate the alpha tensor component
-        utils::logmesg(lmp, "{} {} {}\t", alpha_index_basic[k][1], alpha_index_basic[k][2],
-                       alpha_index_basic[k][3]);
-
         double pow0 = coord_powers[alpha_index_basic[k][1]][0];
         double pow1 = coord_powers[alpha_index_basic[k][2]][1];
         double pow2 = coord_powers[alpha_index_basic[k][3]][2];
@@ -189,9 +183,6 @@ void PairMTP::compute(int eflag, int vflag)
           moment_jacobian[k][jj][2] += val * alpha_index_basic[k][3] *
               coord_powers[alpha_index_basic[k][3] - 1][2] * pow0 * pow1;
         }    //Chain rule for nonzero rank
-
-        utils::logmesg(lmp, "{} {} {}\t", alpha_index_basic[k][1], alpha_index_basic[k][2],
-                       alpha_index_basic[k][3]);
       }
     }
 
