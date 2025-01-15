@@ -38,7 +38,7 @@ class RadialMTPBasis {
   int size;    // the size of the radial basis functions
   double min_cutoff;
   double max_cutoff;
-  double scaling = 1.0;    // all functions are multiplied by scaling
+  double scaling;    // all functions are multiplied by scaling
 
   // Values and derivatives for radial basis functions
   double *radial_basis_vals;

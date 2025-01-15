@@ -23,6 +23,7 @@
 #include "text_file_reader.h"
 #include "utils.h"
 
+#include "csignal"
 #include "cstring"
 
 using namespace LAMMPS_NS;
@@ -80,7 +81,9 @@ void RadialMTPBasis::ReadBasisProperties(TextFileReader &tfr)
 
   //Allocate the memory for the basis set values and deriviatives.
   lmp->memory->create(radial_basis_vals, size, "pair:mtp_radial_vals");
-  lmp->memory->create(radial_basis_ders, size, "pair:,mtp_radial_ders");
+  lmp->memory->create(radial_basis_ders, size, "pair:mtp_radial_ders");
+
+  allocated = 1;
 }
 RadialMTPBasis::~RadialMTPBasis()
 {

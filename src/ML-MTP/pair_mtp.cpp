@@ -92,7 +92,6 @@ void PairMTP::compute(int eflag, int vflag)
 
   // Loop over all provided neighbourhoods
   for (int ii = 0; ii < inum; ii++) {
-
     int i = list->ilist[ii];    // Set central atom index
     int itype = type[i] - 1;    // Set central atom type. Convert back to zero indexing.
     if (itype >= species_count)
@@ -107,18 +106,23 @@ void PairMTP::compute(int eflag, int vflag)
                  "moment_jacobian");    // Resize the working jacobian
     std::fill(&moment_jacobian[0][0][0],
               &moment_jacobian[0][0][0] + 3 * jnum * alpha_index_basic_count,
-              0.0);    //Fill with jacobian with 0
+              0.0);    //Fill jacobian with 0
+    std::fill(&moment_tensor_vals[0], &moment_tensor_vals[0] + alpha_moment_count,
+              0.0);    //Fill moments with 0
+    std::fill(&nbh_energy_ders_wrt_moments[0], &nbh_energy_ders_wrt_moments[0] + alpha_moment_count,
+              0.0);    //Fill moment derivatives with 0
 
     // ------------ Begin Alpha Basic Calc ------------
     // Loop over all neighbours
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];    //List of neighbours
-      int jtype = type[j] - 1;      // Convert back to zero indexing
+      j &= NEIGHMASK;
+      int jtype = type[j] - 1;    // Convert back to zero indexing
       if (jtype >= species_count)
         error->all(FLERR,
                    "Too few species count in the MTP potential!");    // Might not need this check
 
-      double r[3] = {x[j][0] - xi[0], x[j][0] - xi[1], x[j][0] - xi[2]};
+      double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
 
       double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
@@ -136,12 +140,14 @@ void PairMTP::compute(int eflag, int vflag)
 
       //Calculate the alpha basics
       for (int k = 0; k < alpha_index_basic_count; k++) {
-        double val, der = 0;
+        double val = 0;
+        double der = 0;
         int mu = alpha_index_basic[k][0];
 
         //Find the offset for the radial basis coeffs
         int pair_offset = itype * species_count + jtype;
-        int offset = pair_offset * radial_basis->size * radial_func_count + mu * radial_basis->size;
+        int offset =
+            (pair_offset * radial_basis->size * radial_func_count) + mu * radial_basis->size;
 
         // Find the radial component and its derivative
         for (int ri = 0; ri < radial_basis->size; ri++) {
@@ -156,6 +162,9 @@ void PairMTP::compute(int eflag, int vflag)
         der = der * norm_fac - norm_rank * val / dist;
 
         // Calculate the alpha tensor component
+        utils::logmesg(lmp, "{} {} {}\t", alpha_index_basic[k][1], alpha_index_basic[k][2],
+                       alpha_index_basic[k][3]);
+
         double pow0 = coord_powers[alpha_index_basic[k][1]][0];
         double pow1 = coord_powers[alpha_index_basic[k][2]][1];
         double pow2 = coord_powers[alpha_index_basic[k][3]][2];
@@ -178,29 +187,24 @@ void PairMTP::compute(int eflag, int vflag)
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][3] != 0) {
           moment_jacobian[k][jj][2] += val * alpha_index_basic[k][3] *
-              coord_powers[alpha_index_basic[k][3] - 1][1] * pow0 * pow1;
+              coord_powers[alpha_index_basic[k][3] - 1][2] * pow0 * pow1;
         }    //Chain rule for nonzero rank
+
+        utils::logmesg(lmp, "{} {} {}\t", alpha_index_basic[k][1], alpha_index_basic[k][2],
+                       alpha_index_basic[k][3]);
       }
     }
-
-    // for (int aa = 0; aa < alpha_index_basic_count; aa++) {
-    //   for (int bb = 0; bb < jnum; bb++) {
-    //     for (int cc = 0; cc < 3; cc++) std::cout << moment_jacobian[aa][bb][cc];
-    //     std::cout << std::endl;
-    //   }
-    // }
-    // raise(SIGTRAP);
 
     // ------------ Contruct Other Alphas  ------------
     for (int k = 0; k < alpha_index_times_count; k++) {
       double val0 = moment_tensor_vals[alpha_index_times[k][0]];
       double val1 = moment_tensor_vals[alpha_index_times[k][1]];
       int val2 = alpha_index_times[k][2];
-      moment_tensor_vals[alpha_index_times[k][3]] += val2 * val0 * val1;
+      moment_tensor_vals[alpha_index_times[k][3]] += val0 * val1 * val2;
     }
 
     // ------------ Convolve Basis Set From Alpha Map ------------
-    nbh_energy = species_coeffs[i];    // Essentially the reference point energy per species
+    nbh_energy = species_coeffs[itype];    // Essentially the reference point energy per species
     for (int k = 0; k < alpha_scalar_count; k++)
       nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
 
@@ -456,7 +460,7 @@ void PairMTP::read_file(char *mtp_file_name)
       error->all(FLERR, "Error reading MTP file. Alpha moment count not found.");
     alpha_moment_count = line_tokens.next_int();
     memory->create(moment_tensor_vals, alpha_moment_count, "moment_tensor_vals");
-    memory->create(nbh_energy_ders_wrt_moments, alpha_scalar_count, "nbh_energy_ders_wrt_moments");
+    memory->create(nbh_energy_ders_wrt_moments, alpha_moment_count, "nbh_energy_ders_wrt_moments");
 
     // Get the basic alpha count
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
