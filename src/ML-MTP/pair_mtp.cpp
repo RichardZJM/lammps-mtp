@@ -31,6 +31,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstring>
+#include <iostream>
 
 using namespace LAMMPS_NS;
 
@@ -52,8 +53,6 @@ PairMTP::~PairMTP()
     memory->destroy(setflag);
     memory->destroy(cutsq);
     memory->destroy(moment_tensor_vals);
-    memory->destroy(mtp_basis_vals);
-    memory->destroy(mtp_basis_ders);
     memory->destroy(radial_basis_coeffs);
     memory->destroy(linear_coeffs);
     memory->destroy(species_coeffs);
@@ -123,9 +122,9 @@ void PairMTP::compute(int eflag, int vflag)
 
       double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
-      if (dist_sq > cutsq[i][j]) continue;
-      continue;
-      ;    // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead
+      if (dist_sq > cutsq[itype + 1][jtype + 1]) continue;    //1 indexing
+      // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead.
+
       double dist = std::sqrt(dist_sq);
       radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
 
@@ -146,8 +145,8 @@ void PairMTP::compute(int eflag, int vflag)
 
         // Find the radial component and its derivative
         for (int ri = 0; ri < radial_basis->size; ri++) {
-          val += radial_basis_coeffs[offset + ri] * radial_basis->vals[ri];
-          der += radial_basis_coeffs[offset + ri] * radial_basis->ders[ri];
+          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
+          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
         }
 
         // Normalize by the rank of alpha's coresponding tensor
@@ -161,28 +160,36 @@ void PairMTP::compute(int eflag, int vflag)
         double pow1 = coord_powers[alpha_index_basic[k][2]][1];
         double pow2 = coord_powers[alpha_index_basic[k][3]][2];
         double pow = pow0 * pow1 * pow2;
-        moment_tensor_vals[i] += val * pow;
+        moment_tensor_vals[k] += val * pow;
 
         // Get the component's derivatives too
         pow *= der / dist;
-        moment_jacobian[k][j][0] += pow * r[0];
-        moment_jacobian[k][j][1] += pow * r[1];
-        moment_jacobian[k][j][2] += pow * r[2];
+        moment_jacobian[k][jj][0] += pow * r[0];
+        moment_jacobian[k][jj][1] += pow * r[1];
+        moment_jacobian[k][jj][2] += pow * r[2];
         // Maybe eliminate the if else statments in GPU version?
         if (alpha_index_basic[k][1] != 0) {
-          moment_jacobian[k][j][0] += val * alpha_index_basic[k][1] *
+          moment_jacobian[k][jj][0] += val * alpha_index_basic[k][1] *
               coord_powers[alpha_index_basic[k][1] - 1][0] * pow1 * pow2;
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][2] != 0) {
-          moment_jacobian[k][j][1] += val * alpha_index_basic[k][2] *
+          moment_jacobian[k][jj][1] += val * alpha_index_basic[k][2] *
               coord_powers[alpha_index_basic[k][2] - 1][1] * pow0 * pow2;
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][3] != 0) {
-          moment_jacobian[k][j][2] += val * alpha_index_basic[k][3] *
+          moment_jacobian[k][jj][2] += val * alpha_index_basic[k][3] *
               coord_powers[alpha_index_basic[k][3] - 1][1] * pow0 * pow1;
         }    //Chain rule for nonzero rank
       }
     }
+
+    // for (int aa = 0; aa < alpha_index_basic_count; aa++) {
+    //   for (int bb = 0; bb < jnum; bb++) {
+    //     for (int cc = 0; cc < 3; cc++) std::cout << moment_jacobian[aa][bb][cc];
+    //     std::cout << std::endl;
+    //   }
+    // }
+    // raise(SIGTRAP);
 
     // ------------ Contruct Other Alphas  ------------
     for (int k = 0; k < alpha_index_times_count; k++) {
@@ -227,7 +234,7 @@ void PairMTP::compute(int eflag, int vflag)
         double temp_force[3] = {0, 0, 0};
         for (int a = 0; a < 3; a++) {
           //Calculate forces
-          temp_force[a] = nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][j][a];
+          temp_force[a] = nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][jj][a];
           // Maybe need to look at the newton pair here.
           f[i][a] += temp_force[a];
           f[j][a] -= temp_force[a];
@@ -436,7 +443,7 @@ void PairMTP::read_file(char *mtp_file_name)
       for (int j = 0; j < radial_func_count; j++) {
         line_tokens = ValueTokenizer(tfr.next_line(), separators + "{,}");
         for (int k = 0; k < radial_basis->size; k++) {
-          radial_basis_coeffs[pair_offset + (j * radial_basis->size) + i] =
+          radial_basis_coeffs[pair_offset + (j * radial_basis->size) + k] =
               line_tokens.next_double();
         }
       }
@@ -448,6 +455,8 @@ void PairMTP::read_file(char *mtp_file_name)
     if (keyword != "alpha_moments_count")
       error->all(FLERR, "Error reading MTP file. Alpha moment count not found.");
     alpha_moment_count = line_tokens.next_int();
+    memory->create(moment_tensor_vals, alpha_moment_count, "moment_tensor_vals");
+    memory->create(nbh_energy_ders_wrt_moments, alpha_scalar_count, "nbh_energy_ders_wrt_moments");
 
     // Get the basic alpha count
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
@@ -479,7 +488,7 @@ void PairMTP::read_file(char *mtp_file_name)
       error->all(FLERR, "Wrong number of radial functions specified!");
 
     //Precompute the maximum alpha basic index
-    int max_alpha_index_basic = 0;
+    max_alpha_index_basic = 0;
     for (int i = 0; i < alpha_index_basic_count; i++)
       max_alpha_index_basic =
           std::max(max_alpha_index_basic,
@@ -519,7 +528,6 @@ void PairMTP::read_file(char *mtp_file_name)
     if (keyword != "alpha_scalar_moments")
       error->all(FLERR, "Error reading MTP file. Alpha scalar moment count not found.");
     alpha_scalar_count = line_tokens.next_int();
-    memory->create(nbh_energy_ders_wrt_moments, alpha_scalar_count, "nbh_energy_ders_wrt_moments");
 
     //Read the alpha moment mappings
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");

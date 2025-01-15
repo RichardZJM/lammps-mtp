@@ -24,12 +24,6 @@ namespace LAMMPS_NS {
 
 class RadialMTPBasis {
  public:
-  // values and derivatives, set by calc(val)
-  std::vector<double> vals;
-  std::vector<double> ders;
-
-  int allocated = 0;
-
   RadialMTPBasis(TextFileReader &tfr, LAMMPS *lmp);
   ~RadialMTPBasis();    // Needed to clear memory
 
@@ -38,6 +32,8 @@ class RadialMTPBasis {
 
   virtual void calc_radial_basis(double dist) = 0;
   virtual void calc_radial_basis_ders(double dist) = 0;
+
+  int allocated = 0;
 
   int size;    // the size of the radial basis functions
   double min_cutoff;

@@ -50,8 +50,6 @@ class PairMTP : public Pair {
   double scaling = 1;
 
   double *moment_tensor_vals;
-  double *mtp_basis_vals;
-  double *mtp_basis_ders;
 
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
@@ -68,7 +66,7 @@ class PairMTP : public Pair {
   //Working buffers
   double *dist_powers;
   double **coord_powers;
-  double ***moment_jacobian;
+  double ***moment_jacobian = nullptr;
   double *nbh_energy_ders_wrt_moments;
 };
 
