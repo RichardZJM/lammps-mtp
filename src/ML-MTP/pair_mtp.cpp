@@ -222,43 +222,48 @@ void PairMTP::compute(int eflag, int vflag)
     }
 
     //------------ Step 3: Multiply energy ders wrt moment by the Jacobian to get forces ------------
-    for (int k = 0; k < alpha_index_basic_count; k++)
-      for (int jj = 0; jj < jnum; jj++) {
-        int j = firstneigh[i][jj];
-        j &= NEIGHMASK;
-        double temp_force[3] = {0, 0, 0};
+    for (int jj = 0; jj < jnum; jj++) {
+      int j = firstneigh[i][jj];
+      j &= NEIGHMASK;
+      double temp_force[3] = {0, 0, 0};
+      for (int k = 0; k < alpha_index_basic_count; k++)
         for (int a = 0; a < 3; a++) {
           //Calculate forces
-          temp_force[a] = nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][jj][a];
-          // Maybe need to look at the newton pair here.
-          f[i][a] += temp_force[a];
-          f[j][a] -= temp_force[a];
+          temp_force[a] += nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][jj][a];
         }
 
-        //Calculate virial stress
-        if (vflag) {
-          double r[3] = {x[j][0] - xi[0], x[j][0] - xi[1], x[j][0] - xi[2]};
+      f[i][0] += temp_force[0];
+      f[i][1] += temp_force[1];
+      f[i][2] += temp_force[2];
 
-          virial[0] -= temp_force[0] * r[0];    //xx
-          virial[1] -= temp_force[1] * r[1];    //yy
-          virial[2] -= temp_force[2] * r[2];    //zz
+      f[j][0] -= temp_force[0];
+      f[j][1] -= temp_force[1];
+      f[j][2] -= temp_force[2];
 
-          virial[3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]) / 2;    //xy
-          virial[4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]) / 2;    //xz
-          virial[5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]) / 2;    //yz
+      //Calculate virial stress
+      if (vflag) {
+        double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
 
-          //This can be more efficient but I'm not sure if it's even needed.
-          if (vflag_atom) {
-            vatom[i][0] -= temp_force[0] * r[0];    //xx
-            vatom[i][1] -= temp_force[1] * r[1];    //yy
-            vatom[i][2] -= temp_force[2] * r[2];    //zz
+        virial[0] -= temp_force[0] * r[0] * 2;    //xx
+        virial[1] -= temp_force[1] * r[1] * 2;    //yy
+        virial[2] -= temp_force[2] * r[2] * 2;    //zz
 
-            vatom[i][3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]) / 2;    //xy
-            vatom[i][4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]) / 2;    //xz
-            vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]) / 2;
-          }
+        virial[3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]);    //xy
+        virial[4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]);    //xz
+        virial[5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]);    //yz
+
+        //This can be more efficient but I'm not sure if it's even needed.
+        if (vflag_atom) {
+          vatom[i][0] -= temp_force[0] * r[0] * 2;    //xx
+          vatom[i][1] -= temp_force[1] * r[1] * 2;    //yy
+          vatom[i][2] -= temp_force[2] * r[2] * 2;    //zz
+
+          vatom[i][3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]);    //xy
+          vatom[i][4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]);    //xz
+          vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]);
         }
       }
+    }
 
     if (vflag_fdotr) virial_fdotr_compute();
   }
@@ -270,7 +275,7 @@ void PairMTP::compute(int eflag, int vflag)
 void PairMTP::settings(int narg, char **arg)
 {
   if (narg != 1)
-    error->all(FLERR, "Pair style MTP must have exact 1 argment, the MTP potential file name.");
+    error->all(FLERR, "Pair style MTP must have exact 1 argument, the MTP potential file name.");
   read_file(arg[0]);
 }
 
@@ -281,7 +286,7 @@ void PairMTP::settings(int narg, char **arg)
 void PairMTP::coeff(int narg, char **arg)
 {
   // The potential file is specified in the setting function instead.
-  if (narg != 0) error->all(FLERR, "Only \"pair_coeff * *\n is permitted");
+  if (narg != 2) error->all(FLERR, "Only \"pair_coeff * *\" is permitted");
 }
 
 /* ----------------------------------------------------------------------
@@ -302,7 +307,7 @@ void PairMTP::init_style()
 
 double PairMTP::init_one(int i, int j)
 {
-  if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set. {}{}", i, j);
+  if (setflag[i][j] == 0) error->all(FLERR, "Not all pair coeffs are set. See types {}-{}.", i, j);
 
   return radial_basis->max_cutoff;
 }
@@ -312,17 +317,20 @@ double PairMTP::init_one(int i, int j)
 ------------------------------------------------------------------------- */
 void PairMTP::read_file(char *mtp_file_name)
 {
-  //Open the MTP file on proc 0
+  /*NOTE: TextFileReader is used in lieu of PotentialFileReader to ensure compatability 
+with the MLIP-3 package. The alpha indicies in this format are all in one line, requiring
+access to the buffer size that is not provided in PFR.
+
+Might be able to replace that section with next_values which is in both TFR and PFR.
+*/
+
   //TODO: NEED TO EXTRACT AND ACCOUNT FOR NON PROC 0
+
+  //Open the MTP file on proc 0
   if (comm->me == 0) {
-
-    // Maybe this read section isn't needed and the potential file reader already handles errors.
-    FILE *mtp_file;
-    mtp_file = utils::open_potential(mtp_file_name, lmp, nullptr);
-    if (mtp_file == nullptr)
-      error->one(FLERR, "Cannot open MTP file {}: ", mtp_file_name, utils::getsyserror());
-
-    TextFileReader tfr(mtp_file_name, "ml-mtp");
+    FILE *mtp_file = utils::open_potential(mtp_file_name, lmp, nullptr);
+    TextFileReader tfr(mtp_file, "ml-mtp");
+    tfr.ignore_comments = true;
     std::string new_separators = "=, ";
     std::string separators = TOKENIZER_DEFAULT_SEPARATORS + new_separators;
 
