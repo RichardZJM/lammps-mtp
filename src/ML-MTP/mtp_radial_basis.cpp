@@ -41,24 +41,7 @@ RadialMTPBasis::RadialMTPBasis(TextFileReader &tfr, LAMMPS *lmp)
   ReadBasisProperties(tfr);
 }
 
-RadialMTPBasis::RadialMTPBasis(int size)
-{
-
-  //Clear out old arrays if any
-  if (allocated) {
-    lmp->memory->destroy(radial_basis_vals);
-    lmp->memory->destroy(radial_basis_ders);
-  }
-
-  //Allocate the memory for the basis set values and deriviatives.
-  lmp->memory->create(radial_basis_vals, size, "pair:mtp_radial_vals");
-  lmp->memory->create(radial_basis_ders, size, "pair:mtp_radial_ders");
-
-  allocated = 1;
-}
-
-RadialMTPBasis::RadialMTPBasis(int size, double min_cutoff, double max_cutoff, double scaling) :
-    size(size), min_cutoff(min_cutoff), max_cutoff(max_cutoff), scaling(scaling)
+RadialMTPBasis::RadialMTPBasis(int size, LAMMPS *lmp) : size(size), lmp(lmp)
 {
   //Clear out old arrays if any
   if (allocated) {

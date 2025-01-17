@@ -33,44 +33,42 @@ class PairMTP : public Pair {
  public:
   PairMTP(class LAMMPS *);
   ~PairMTP() override;
-  void compute(int, int) override;
-  void settings(int, char **) override;
-  void coeff(int, char **) override;
-  void init_style() override;
-  double init_one(int, int) override;
+  void compute(int, int) override;         //Workhorse comuptation
+  void settings(int, char **) override;    // Reads args from "pair_style"
+  void coeff(int, char **) override;       // Reads args from "pair_coeff" (only * * for mtp)
+  void init_style() override;              //Init style
+  double init_one(int, int) override;      // Checks that species are inited
 
  protected:
-  //   virtual void allocate();
-  void read_file(char *);
+  void read_file(char *);                     //Parsing file using LAMMPS conventions
   std::string potential_name = "Untitled";    //An optional name which isn't currently used.
   std::string potential_tag = "";    //An optional tag/description which isn't currently used.
 
-  int species_count;
-
-  double scaling = 1;
+  int species_count;     // Number of species
+  double scaling = 1;    // All forces are multiplied by scaling
 
   // Radial basis
-  int radial_basis_type_len;
-  char *radial_basis_type_c;
-  RadialMTPBasis *radial_basis;
-  double *radial_basis_coeffs;
-  int radial_func_count;
-  int radial_basis_size;
+  //1 => "RBChebyshev"
+  int radial_basis_type_index;     // Index for MPI Bcast
+  RadialMTPBasis *radial_basis;    // Pointer to basis object
+  double *radial_basis_coeffs;     // These are the radial basis coeffs (c)
+  int radial_func_count;           // Number of radial bases (mu_max)
+  int radial_basis_size;           // Number of elements in bases
 
-  double *linear_coeffs;     // These are the moment tensor basis coeffs (eps)
+  double *linear_coeffs;     // These are the moment tensor basis coeffs (xi)
   double *species_coeffs;    // For the species coefficients (0th rank moment tensor)
   int alpha_moment_count, alpha_index_basic_count, alpha_index_times_count, alpha_scalar_count,
-      max_alpha_index_basic;
-  int **alpha_index_basic;
-  int **alpha_index_times;
-  int *alpha_moment_mapping;
+      max_alpha_index_basic;    // Counts of various alpha indicies
+  int **alpha_index_basic;      // Indicies how to construct elementary moments from coords and dist
+  int **alpha_index_times;      // Indicies to combine existing moments into knew ones
+  int *alpha_moment_mapping;    // Selects the basis values from completed moments
 
   //Working buffers
-  double *dist_powers;
-  double **coord_powers;
-  double ***moment_jacobian = nullptr;    // First created during grow
-  double *moment_tensor_vals;
-  double *nbh_energy_ders_wrt_moments;
+  double *dist_powers;      // Buffer used for powers of dist (eg. d^i)
+  double **coord_powers;    // Buffer used for powers of rel. pos. (eg. [dx^i, dy^i, dz^i])
+  double ***moment_jacobian = nullptr;    // First created during compute using grow
+  double *moment_tensor_vals;             //Buffer to hold the moments
+  double *nbh_energy_ders_wrt_moments;    // Same as above except for ders
 };
 
 }    // namespace LAMMPS_NS

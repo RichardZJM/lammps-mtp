@@ -319,8 +319,6 @@ access to the buffer size that is not provided in PFR.
 Might be able to replace that section with next_values which is in both TFR and PFR.
 */
 
-  //TODO: NEED TO EXTRACT AND ACCOUNT FOR NON PROC 0
-
   //Open the MTP file on proc 0
   if (comm->me == 0) {
     FILE *mtp_file = utils::open_potential(mtp_file_name, lmp, nullptr);
@@ -396,13 +394,11 @@ Might be able to replace that section with next_values which is in both TFR and 
       radial_basis = new RBChebyshev(tfr, lmp);
       radial_basis->scaling = scaling;
       radial_basis_size = radial_basis->size;
+      radial_basis_type_index = 1;
     } else
       error->all(FLERR,
                  "Error reading MTP file. The specified radial basis set type, {}, was not found..",
                  radial_basis_type);
-
-    radial_basis_type_len = radial_basis_type.length();
-    radial_basis_type_c = radial_basis_type.data();
 
     // Read the basis function count
     line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
@@ -555,12 +551,12 @@ Might be able to replace that section with next_values which is in both TFR and 
       error->all(FLERR, "Error reading MTP file. Moment coefficients not found.");
     memory->create(linear_coeffs, alpha_scalar_count, "moment_coeffs");
     for (int i = 0; i < alpha_scalar_count; i++) { linear_coeffs[i] = line_tokens.next_double(); }
-  }
+  }    // Proc 0
 
   // ---------- Now broadcast to all the other procs ----------
   //Radial Basis Set Type First
-  MPI_Bcast(radial_basis_type_c, radial_basis_type_len, MPI_DOUBLE, 0,
-            world);    //char array of basis type name
+  MPI_Bcast(&radial_basis_type_index, 1, MPI_INT, 0,
+            world);    //index of the radial basis
 
   //Then Single Values
   MPI_Bcast(&scaling, 1, MPI_DOUBLE, 0, world);
@@ -573,28 +569,27 @@ Might be able to replace that section with next_values which is in both TFR and 
   MPI_Bcast(&alpha_index_times_count, 1, MPI_INT, 0, world);
   MPI_Bcast(&alpha_scalar_count, 1, MPI_INT, 0, world);
 
-  //First we reconstruct the radial basis set
-  std::string radial_basis_type(radial_basis_type_c);
-  if (radial_basis_type == "RBChebyshev") {
-    radial_basis = new RBChebyshev(radial_basis_size);
-    radial_basis->scaling = scaling;
-  } else
-    error->all(FLERR,
-               "Error reading MTP file. The specified radial basis set type, {}, was not found..",
-               radial_basis_type);
-
-  //We can then populate the cutoffs
-  MPI_Bcast(&radial_basis->min_cutoff, 1, MPI_INT, 0, world);
-  MPI_Bcast(&radial_basis->max_cutoff, 1, MPI_INT, 0, world);
-
-  // Precalc the radial coeff count
+  // Precalc some constatns
   int pairs_count = species_count * species_count;
   int radial_coeff_count_per_pair = radial_basis_size * radial_func_count;
   int radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
+  int np1 = (species_count + 1);
 
   // Now we allocate memory for all the arrays.
   if (comm->me != 0) {
-    //Start with the alphas
+    //First we reconstruct the radial basis set
+    if (radial_basis_type_index == 1) {
+      utils::logmesg(lmp, "\n\nProc {} RIndex = {}, rsize = {}, \n\n", comm->me,
+                     radial_basis_type_index, radial_basis_size);
+      radial_basis = new RBChebyshev(radial_basis_size, lmp);
+      radial_basis->scaling = scaling;
+    }
+
+    //Flags
+    memory->create(cutsq, np1, np1, "pair:cutsq");
+    memory->create(setflag, np1, np1, "pair:setflag");
+
+    //Alpha indicies
     memory->create(alpha_index_basic, alpha_index_basic_count, 4, "alpha_index_basic");
     memory->create(alpha_index_times, alpha_index_times_count, 4, "alpha_index_times");
     memory->create(alpha_moment_mapping, alpha_scalar_count, "alpha_moment_mapping");
@@ -604,28 +599,36 @@ Might be able to replace that section with next_values which is in both TFR and 
     memory->create(coord_powers, max_alpha_index_basic, 3, "coord_powers");
     memory->create(moment_tensor_vals, alpha_moment_count, "moment_tensor_vals");
     memory->create(nbh_energy_ders_wrt_moments, alpha_moment_count, "nbh_energy_ders_wrt_moments");
-    //Jacobian will be create with memory->grow during calculation.
+    //Jacobian will be first created with memory->grow during calculation.
 
     //Coefficients
     memory->create(radial_basis_coeffs, radial_coeff_count, "radial_basis_coeffs");
-    memory->create(linear_coeffs, alpha_scalar_count, "dist_powers");
-    memory->create(species_coeffs, species_count, "dist_powers");
+    memory->create(linear_coeffs, alpha_scalar_count, "linear_coeffs");
+    memory->create(species_coeffs, species_count, "species_coeffs");
   }
 
+  //We can then populate the cutoffs
+  MPI_Bcast(&radial_basis->min_cutoff, 1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&radial_basis->max_cutoff, 1, MPI_DOUBLE, 0, world);
+
   //Now we B Cast into arrays
-  //Alphas
-  MPI_Bcast(alpha_index_basic, alpha_index_basic_count * 4, MPI_INT, 0, world);
-  MPI_Bcast(alpha_index_times, alpha_index_times_count * 4, MPI_INT, 0, world);
+  //Flags
+  MPI_Bcast(&cutsq[0][0], np1 * np1, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&setflag[0][0], np1 * np1, MPI_INT, 0, world);
+
+  // //Alphas
+  MPI_Bcast(&alpha_index_basic[0][0], alpha_index_basic_count * 4, MPI_INT, 0, world);
+  MPI_Bcast(&alpha_index_times[0][0], alpha_index_times_count * 4, MPI_INT, 0, world);
   MPI_Bcast(alpha_moment_mapping, alpha_scalar_count, MPI_INT, 0, world);
 
-  //Working buffers
-  //Preassign constant values for dist powers and coord powers. Other buffers can be unitialized.
+  // //Working buffers
+  // //Preassign constant values for dist powers and coord powers. Other buffers can be unitialized.
   dist_powers[0] = coord_powers[0][0] = coord_powers[0][1] = coord_powers[0][2] = 1;
 
-  //Coefficients
-  MPI_Bcast(radial_basis_coeffs, radial_coeff_count, MPI_INT, 0, world);
-  MPI_Bcast(linear_coeffs, alpha_scalar_count, MPI_INT, 0, world);
-  MPI_Bcast(species_coeffs, species_count, MPI_INT, 0, world);
+  // //Coefficients
+  MPI_Bcast(radial_basis_coeffs, radial_coeff_count, MPI_DOUBLE, 0, world);
+  MPI_Bcast(linear_coeffs, alpha_scalar_count, MPI_DOUBLE, 0, world);
+  MPI_Bcast(species_coeffs, species_count, MPI_DOUBLE, 0, world);
 
   allocated = 1;
 }
