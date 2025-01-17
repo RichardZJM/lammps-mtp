@@ -24,6 +24,7 @@
 namespace LAMMPS_NS {
 class RBChebyshev : public RadialMTPBasis {
  public:
+  RBChebyshev(int size) : RadialMTPBasis(size) {};
   RBChebyshev(TextFileReader &tfr, LAMMPS *lmp) : RadialMTPBasis(tfr, lmp) {}
   virtual void calc_radial_basis(double val) override;
   virtual void calc_radial_basis_ders(double val) override;

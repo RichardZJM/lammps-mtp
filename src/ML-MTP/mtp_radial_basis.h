@@ -25,6 +25,8 @@ namespace LAMMPS_NS {
 class RadialMTPBasis {
  public:
   RadialMTPBasis(TextFileReader &tfr, LAMMPS *lmp);
+  RadialMTPBasis(int size, double min_cutoff, double max_cutoff, double scaling);
+  RadialMTPBasis(int size);
   ~RadialMTPBasis();    // Needed to clear memory
 
   //Specifically reads the basis properties (ie. cutoffs and size) and not the radial parameters

@@ -49,11 +49,13 @@ class PairMTP : public Pair {
 
   double scaling = 1;
 
-  double *moment_tensor_vals;
-
+  // Radial basis
+  int radial_basis_type_len;
+  char *radial_basis_type_c;
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;
   int radial_func_count;
+  int radial_basis_size;
 
   double *linear_coeffs;     // These are the moment tensor basis coeffs (eps)
   double *species_coeffs;    // For the species coefficients (0th rank moment tensor)
@@ -66,7 +68,8 @@ class PairMTP : public Pair {
   //Working buffers
   double *dist_powers;
   double **coord_powers;
-  double ***moment_jacobian = nullptr;
+  double ***moment_jacobian = nullptr;    // First created during grow
+  double *moment_tensor_vals;
   double *nbh_energy_ders_wrt_moments;
 };
 
