@@ -70,10 +70,8 @@ PairMTP::~PairMTP()
 
 void PairMTP::compute(int eflag, int vflag)
 {
-  if (eflag || vflag)
-    ev_setup(eflag, vflag);
-  else
-    evflag = vflag_fdotr = eflag_global = eflag_atom = 0;
+
+  ev_setup(eflag, vflag);
 
   double **x = atom->x;      // atomic positons
   double **f = atom->f;      // atomic forces
@@ -176,12 +174,12 @@ void PairMTP::compute(int eflag, int vflag)
               coord_powers[alpha_index_basic[k][1] - 1][0] * pow1 * pow2;
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][2] != 0) {
-          moment_jacobian[k][jj][1] += val * alpha_index_basic[k][2] *
-              coord_powers[alpha_index_basic[k][2] - 1][1] * pow0 * pow2;
+          moment_jacobian[k][jj][1] += val * alpha_index_basic[k][2] * pow0 *
+              coord_powers[alpha_index_basic[k][2] - 1][1] * pow2;
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][3] != 0) {
-          moment_jacobian[k][jj][2] += val * alpha_index_basic[k][3] *
-              coord_powers[alpha_index_basic[k][3] - 1][2] * pow0 * pow1;
+          moment_jacobian[k][jj][2] += val * alpha_index_basic[k][3] * pow0 * pow1 *
+              coord_powers[alpha_index_basic[k][3] - 1][2];
         }    //Chain rule for nonzero rank
       }
     }
@@ -191,7 +189,7 @@ void PairMTP::compute(int eflag, int vflag)
       double val0 = moment_tensor_vals[alpha_index_times[k][0]];
       double val1 = moment_tensor_vals[alpha_index_times[k][1]];
       int val2 = alpha_index_times[k][2];
-      moment_tensor_vals[alpha_index_times[k][3]] += val0 * val1 * val2;
+      moment_tensor_vals[alpha_index_times[k][3]] += val2 * val0 * val1;
     }
 
     // ------------ Convolve Basis Set From Alpha Map ------------
@@ -260,12 +258,10 @@ void PairMTP::compute(int eflag, int vflag)
 
           vatom[i][3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]);    //xy
           vatom[i][4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]);    //xz
-          vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]);
+          vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]);    //yz
         }
       }
     }
-
-    if (vflag_fdotr) virial_fdotr_compute();
   }
 }
 /* ----------------------------------------------------------------------
