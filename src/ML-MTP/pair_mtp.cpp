@@ -544,6 +544,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     memory->create(species_coeffs, species_count, "species_coeffs");
     for (int i = 0; i < species_count; i++) { species_coeffs[i] = line_tokens.next_double(); }
 
+    //test
     //Read the linear MTP basis coefficients
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
