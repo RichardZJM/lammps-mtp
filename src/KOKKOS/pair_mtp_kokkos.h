@@ -53,8 +53,14 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
 
   // KOKKOS kernels go here
 
+  //   KOKKOS_INLINE_FUNCTION
+  //   void
+  //   operator()(TagPairPACEComputeNeigh,
+  //              const typename Kokkos::TeamPolicy<DeviceType, TagPairPACEComputeNeigh>::member_type
+  //                  &team) const;
+
  protected:
-  int need_dup;    // Flag to check if device duplication is needed
+  int chunk_size;    // Needed to process the computation in batches to avoid running out of VRAM.
 
   // Characteric flag
   int inum, max_neighs, chunk_size, chunk_offset;
@@ -76,23 +82,43 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   typename AT::t_int_1d_randomread type;
 
   // ---------- Device Arrays  ----------
-  // Alphas first
-  Kokkos::View<T_INT **, DeviceType> d_alpha_index_basic;    // For constructing the basic alphas
-  Kokkos::View<T_INT **, DeviceType> d_alpha_index_times;    // For combining alphas
-  Kokkos::View<T_INT, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions
+  // Alphas indicies
+  Kokkos::View<int **, DeviceType> d_alpha_index_basic;    // For constructing the basic alphas
+  Kokkos::View<int **, DeviceType> d_alpha_index_times;    // For combining alphas
+  Kokkos::View<int, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions
 
-  // The learned coefficients
-  Kokkos::View<real_type *, DeviceType> d_radial_coeffs;     // The radial components
-  Kokkos::View<real_type *, DeviceType> d_species_coeffs;    // The species-based constants
-  Kokkos::View<real_type *, DeviceType> d_linear_coeffs;     // Basis coeffs
+  // The learned coefficients. These should probably be scatterviews but the current implementation simply uses atomics if needed.
+  Kokkos::View<double *, DeviceType> d_radial_coeffs;     // The radial components
+  Kokkos::View<double *, DeviceType> d_species_coeffs;    // The species-based constants
+  Kokkos::View<double *, DeviceType> d_linear_coeffs;     // Basis coeffs
+
+  // Global working buffers. These need to be scatterviews for atomic access.
+  Kokkos::View<double ****, DeviceType> d_moment_jacobian;
+  Kokkos::View<double **, DeviceType> d_moment_tensor_vals;
+  Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
 
   typedef Kokkos::DualView<F_FLOAT **, DeviceType> tdual_fparams;
   tdual_fparams k_cutsq;    // cutoffs
 
+  int need_dup;
+
   using KKDeviceType = typename KKDevice<DeviceType>::value;
+
   template <typename DataType, typename Layout>
   using DupScatterView =
       KKScatterView<DataType, Layout, KKDeviceType, KKScatterSum, KKScatterDuplicated>;
+
+  template <typename DataType, typename Layout>
+  using NonDupScatterView =
+      KKScatterView<DataType, Layout, KKDeviceType, KKScatterSum, KKScatterNonDuplicated>;
+
+  DupScatterView<F_FLOAT *[3], typename DAT::t_f_array::array_layout> dup_f;
+  DupScatterView<F_FLOAT *[6], typename DAT::t_virial_array::array_layout> dup_vatom;
+
+  NonDupScatterView<F_FLOAT *[3], typename DAT::t_f_array::array_layout> ndup_f;
+  NonDupScatterView<F_FLOAT *[6], typename DAT::t_virial_array::array_layout> ndup_vatom;
+
+  friend void pair_virial_fdotr_compute<PairMTPKokkos>(PairMTPKokkos *);
 };
 
 }    // namespace LAMMPS_NS

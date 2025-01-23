@@ -270,7 +270,8 @@ void PairMTP::compute(int eflag, int vflag)
 void PairMTP::settings(int narg, char **arg)
 {
   if (narg != 1)
-    error->all(FLERR, "Pair style MTP must have exact 1 argument, the MTP potential file name.");
+    utils::logmesg(
+        lmp, "Pair MTP only accepts 1 argument, the MTP potential file. Ignoring other arguments!");
   read_file(arg[0]);
 }
 
