@@ -25,7 +25,7 @@ ARCHIVE =	ar
 ARFLAGS =	-rc
 SHLIBFLAGS =	-shared
 KOKKOS_DEVICES = Cuda
-KOKKOS_ARCH = Volta70
+KOKKOS_ARCH = AMPERE86
 
 # ---------------------------------------------------------------------
 # LAMMPS-specific settings, all OPTIONAL

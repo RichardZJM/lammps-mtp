@@ -33,10 +33,11 @@ PairStyle(mtp/kk/host,PairMTPKokkos<LMPHostType>);
 
 namespace LAMMPS_NS {
 
+// Structs for kernels go here
+struct CalcAlphaBasic {};
+
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
-  // Structs fro computation go here
-
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
   enum { COUL_FLAG = 0 };
   typedef DeviceType device_type;
@@ -53,11 +54,10 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
 
   // KOKKOS kernels go here
 
-  //   KOKKOS_INLINE_FUNCTION
-  //   void
-  //   operator()(TagPairPACEComputeNeigh,
-  //              const typename Kokkos::TeamPolicy<DeviceType, TagPairPACEComputeNeigh>::member_type
-  //                  &team) const;
+  KOKKOS_INLINE_FUNCTION
+  void operator()(
+      CalcAlphaBasic,
+      const typename Kokkos::TeamPolicy<DeviceType, CalcAlphaBasic>::member_type &team) const;
 
  protected:
   int chunk_size;    // Needed to process the computation in batches to avoid running out of VRAM.
@@ -82,13 +82,15 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   typename AT::t_int_1d_randomread type;
 
   // ---------- Device Arrays  ----------
+  // TODO: DOUBLE CHECK THE LAYOUTS!!!!
   // Alphas indicies
-  Kokkos::View<int **, DeviceType> d_alpha_index_basic;    // For constructing the basic alphas
+  Kokkos::View<int **, DeviceType> d_alpha_index_basic;    // For constructing the basic alphas.
   Kokkos::View<int **, DeviceType> d_alpha_index_times;    // For combining alphas
   Kokkos::View<int, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions
 
   // The learned coefficients. These should probably be scatterviews but the current implementation simply uses atomics if needed.
-  Kokkos::View<double *, DeviceType> d_radial_coeffs;     // The radial components
+  Kokkos::View<double *, DeviceType>
+      d_radial_coeffs;    // The radial components. These specifically might benefiti from RandomAccess Trait
   Kokkos::View<double *, DeviceType> d_species_coeffs;    // The species-based constants
   Kokkos::View<double *, DeviceType> d_linear_coeffs;     // Basis coeffs
 
@@ -96,6 +98,15 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;
   Kokkos::View<double **, DeviceType> d_moment_tensor_vals;
   Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
+
+  // Typedefs for shared memory
+  typedef Kokkos::View<F_FLOAT **[3], DeviceType,
+                       Kokkos::DefaultExecutionSpace::scratch_memory_space,
+                       Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      shared_double_3d;    // Used for coord powers
+  typedef Kokkos::View<F_FLOAT **, DeviceType, Kokkos::DefaultExecutionSpace::scratch_memory_space,
+                       Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      shared_double_2d;    // Used for radial basis vals, ders, and dist powers
 
   typedef Kokkos::DualView<F_FLOAT **, DeviceType> tdual_fparams;
   tdual_fparams k_cutsq;    // cutoffs

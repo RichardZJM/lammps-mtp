@@ -265,7 +265,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     Kokkos::Experimental::fill(Kokkos::DefaultExecutionSpace(), d_moment_tensor_vals, 0.0);
     Kokkos::Experimental::fill(Kokkos::DefaultExecutionSpace(), d_nbh_energy_ders_wrt_moments, 0.0);
 
-    // ========== Calculate the alpha basis (Per outer-atom parallelizaton) ==========
+    // ========== Calculate the basis alphas (Per outer-atom parallelizaton) ==========
 
     chunk_offset += chunk_size;    // Manage halt condition
   }    // end batching while loop
@@ -276,7 +276,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
 // ========== Kernels ==========
 
-// Finds the maximum number of neighbours in all neigbhourhoods. This enables use to set the size (2nd index) of the jacobian.
+// Finds the maximum number of neighbours in all neigbhourhoods. This enables use to set the size (2nd index) of the jacobian. (Copied from other potentials)
 template <class DeviceType> struct FindMaxNumNeighs {
   typedef DeviceType device_type;
   NeighListKokkos<DeviceType> k_list;
@@ -291,4 +291,134 @@ template <class DeviceType> struct FindMaxNumNeighs {
     const int num_neighs = k_list.d_numneigh[i];
     if (max_neighs < num_neighs) max_neighs = num_neighs;
   }
+};
+
+// Calculates the basic alphas
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
+    CalcAlphaBasic,
+    const typename Kokkos::TeamPolicy<DeviceType, CalcAlphaBasic>::member_type &team) const
+{
+  // Extract the atom number
+  int ii = team.team_rank() + team.league_rank() * team.team_size();
+  if (ii >= chunk_size) return;
+
+  // Get information about the central atom
+  const int i = d_ilist[ii + chunk_offset] - 1;    // switch to zero indexing
+  const double xi[3] = {x[i][0], x[i][1], x[i][2]};
+  const int itype = type[i];
+  const int num_neighs = d_numneigh[i];
+
+  // If precomputing everything is too much memory, we can consider calculating dist powers and coord powers on-the-fly?
+  shared_double_2d s_radial_basis_vals(team.team_scratch(0), team.team_size(), radial_basis_size);
+  shared_double_2d s_radial_basis_ders(team.team_scratch(0), team.team_size(), radial_basis_size);
+  shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
+  shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic, 3);
+
+  // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
+  // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
+
+  Kokkos::parallel_for(TeamThreadTrange(team, jnum), [=](const int jj) {
+    int j = d_neighbors(i, jj);
+    j &= NEIGHMASK;
+    const int jtype = type(j) - 1;    // switch to zero indexing
+    const double r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
+    const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+    if (rsq < cutsq(i + 1, j + 1)) return;
+
+    const F_FLOAT dist = sqrt(rsq);
+
+    s_dist_powers(jj, 0) = s_coord_powers(jj, 0) = s_coord_powers(jj, 1) = s_coord_powers(jj, 2) =
+        1;    // Set the constants
+
+    // Precompute the coord and distance power
+    int thread_offset = k * s_radial_basis_vals;
+    for (int k = 1; k < max_alpha_index_basic; k++) {
+      s_dist_powers(jj, k) = s_dist_powers(jj, k - 1) * dist;
+      for (int a = 0; a < 3; a++) s_coord_powers(jj, k, a) = s_coord_powers(jj, k - 1, a) * r[a];
+    }
+
+    // ---------- Calculate the radial basis functions ----------
+    // Currently, I just have it hard coded for Rb_Chebyshev. I need to implement a way to handle different radial basis sets in kokkos
+
+    // Calculate the radial basis and store in shared memory
+    F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
+    F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
+
+    s_radial_basis_vals(jj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+    for (int k = 2; k < size; k++) {
+      s_radial_basis_vals(jj, k) =
+          2 * ksi * s_radial_basis_vals(jj, k - 1) - s_radial_basis_vals(jj, k - 2);
+    }
+
+    // Do the same with the derivatives
+    s_radial_basis_ders(jj, 0) =
+        scaling * (0 * (dist - max_cutoff) * (dist - max_cutoff) + 2 * (dist - max_cutoff));
+    s_radial_basis_ders(jj, 1) = scaling *
+        (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
+    for (int k = 2; k < size; k++) {
+      s_radial_basis_ders(jj, k) =
+          2 * (mult * s_radial_basis_vals(jj, k - 1) + ksi * s_radial_basis_ders(jj, k - 1)) -
+          s_radial_basis_ders(jj, k - 2);
+    }
+
+    //Now, we loop through all the basic alphas
+    // To reduce contention we are going to offset the starting index
+    int startIndex = jj % team_size;
+    for (int kk = startIndex; kk < startIndex + alpha_index_basic_count; kk++) {
+      int k = int index = k % alpha_index_basic_count;
+      F_FLOAT val = 0;
+      F_FLOAT der = 0;
+      int mu = alpha_index_basic(k, 0);
+      int a0 = alpha_index_basic(k, 1);
+      int a1 = alpha_index_basic(k, 2);
+      int a2 = alpha_index_basic(k, 3);
+
+      //Find the offset for the radial basis coeffs
+      int pair_offset = itype * species_count + jtype;
+      int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
+
+      // Find the radial component and its derivative
+      for (int ri = 0; ri < radial_basis_size; ri++) {
+        val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(jj, ri);
+        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jj, ri);
+      }
+
+      // Normalize by the rank of alpha's coresponding tensor
+      int norm_rank = a0 + a1 + a2;
+      F_FLOAT norm_fac = 1.0 / s_dist_powers(jj, ai);
+      val *= norm_fac;
+      der = der * norm_fac - norm_rank * val / dist;
+
+      F_FLOAT pow0 = s_coord_powers(a0, 0);
+      F_FLOAT pow1 = s_coord_powers(a1, 1);
+      F_FLOAT pow2 = s_coord_powers(a2, 2);
+      F_FLOAT pow = pow0 * pow1 * pow2;
+      d_moment_tensor_vals(ii, k) += val * pow;
+
+      // Get the component's derivatives too
+      pow *= der / dist;
+      d_moment_jacobian(ii, k, jj, 0) += pow * r[0];
+      d_moment_jacobian(ii, k, jj, 1) += pow * r[1];
+      d_moment_jacobian(ii, k, jj, 2) += pow * r[2];
+
+      // I've removed branch divergence here but maybe an if statement approach is better here, depending on contention.
+      Kokkos::atomic_add(&d_moment_jacobian(ii, k, jj, 0),
+                         val * a0 * s_coord_powers(jj, Kokkos::max(a0 - 1, 1), 0) * pow1 * pow2);
+      Kokkos::atomic_add(&d_moment_jacobian(ii, k, jj, 1),
+                         val * a1 * pow0 * s_coord_powers(jj, Kokkos::max(a1 - 1, 1), 1) * pow2);
+      Kokkos::atomic_add(&d_moment_jacobian(ii, k, jj, 2),
+                         val * a2 * pow0 * pow1 * s_coord_powers(jj, Kokkos::max(a2 - 1, 1), 2));
+
+      // TODO: Try using the following too if applicable where
+      // There is no contention for team size of 32 and MTP lvl >= 12,
+      // d_moment_jacobian(ii, k, jj, 0) +=
+      //     val * a0 * s_coord_powers(jj, Kokkos::max(a0 - 1, 1), 0) * pow1 * pow2;
+      // d_moment_jacobian(ii, k, jj, 1) +=
+      //     val * a1 * pow0 * s_coord_powers(jj, Kokkos::max(a1 - 1, 1), 1) * pow2;
+      // d_moment_jacobian(ii, k, jj, 2) +=
+      //     val * a2 * pow0 * pow1 * s_coord_powers(jj, Kokkos::max(a2 - 1, 1), 2);
+    }
+  });
 };

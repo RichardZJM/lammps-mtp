@@ -54,6 +54,8 @@ class PairMTP : public Pair {
   double *radial_basis_coeffs;     // These are the radial basis coeffs (c)
   int radial_func_count;           // Number of radial bases (mu_max)
   int radial_basis_size;           // Number of elements in bases
+  double min_cutoff;               // Min radial cutoff
+  double max_cutoff;               // Max radial cutoff
 
   double *linear_coeffs;     // These are the moment tensor basis coeffs (xi)
   double *species_coeffs;    // For the species coefficients (0th rank moment tensor)

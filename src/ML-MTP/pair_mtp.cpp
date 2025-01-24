@@ -88,15 +88,15 @@ void PairMTP::compute(int eflag, int vflag)
 
   // Loop over all provided neighbourhoods
   for (int ii = 0; ii < inum; ii++) {
-    int i = list->ilist[ii];    // Set central atom index
-    int itype = type[i] - 1;    // Set central atom type. Convert back to zero indexing.
+    const int i = list->ilist[ii];    // Set central atom index
+    const int itype = type[i] - 1;    // Set central atom type. Convert back to zero indexing.
     if (itype >= species_count)
       error->all(FLERR,
                  "Too few species count in the MTP potential!");    // Might not need this check
     int jnum = numneigh[i];                                         // Set number of neighbours
     double nbh_energy = 0;
-    double xi[3] = {x[i][0], x[i][1],
-                    x[i][2]};    // Cache the position of the central atom for efficiency
+    const double xi[3] = {x[i][0], x[i][1],
+                          x[i][2]};    // Cache the position of the central atom for efficiency
 
     memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
                  "moment_jacobian");    // Resize the working jacobian
@@ -113,19 +113,19 @@ void PairMTP::compute(int eflag, int vflag)
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];    //List of neighbours
       j &= NEIGHMASK;
-      int jtype = type[j] - 1;    // Convert back to zero indexing
+      const int jtype = type[j] - 1;    // Convert back to zero indexing
       if (jtype >= species_count)
         error->all(FLERR,
                    "Too few species count in the MTP potential!");    // Might not need this check
 
-      double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
+      const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
 
-      double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+      const double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
       if (dist_sq > cutsq[itype + 1][jtype + 1]) continue;    //1 indexing
       // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead.
 
-      double dist = std::sqrt(dist_sq);
+      const double dist = std::sqrt(dist_sq);
       radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
 
       // Precompute the coord and distance power
@@ -612,6 +612,8 @@ Might be able to replace that section with next_values which is in both TFR and 
   //We can then populate the cutoffs
   MPI_Bcast(&radial_basis->min_cutoff, 1, MPI_DOUBLE, 0, world);
   MPI_Bcast(&radial_basis->max_cutoff, 1, MPI_DOUBLE, 0, world);
+  min_cutoff = radial_basis->min_cutoff;
+  max_cutoff = radial_basis->max_cutoff;
 
   //Now we B Cast into arrays
   //Flags
