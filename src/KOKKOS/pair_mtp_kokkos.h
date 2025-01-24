@@ -34,7 +34,8 @@ PairStyle(mtp/kk/host,PairMTPKokkos<LMPHostType>);
 namespace LAMMPS_NS {
 
 // Structs for kernels go here
-struct CalcAlphaBasic {};
+struct TagPairMTPCalcAlphaBasic {};
+struct TagPairMTPCalcAlphaTimes {};
 
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
@@ -52,12 +53,20 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   void init_style() override;
   double init_one(int, int) override;
 
-  // KOKKOS kernels go here
+  // ========== Kokkos kernels ==========
+  //Utility routines
+  template <class TagStyle> void check_team_size_for(int, int &, int);
+  template <typename scratch_type>
+  int scratch_size_helper(int values_per_team);    // Helps calcs scratch size for calcalphabasic
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(
-      CalcAlphaBasic,
-      const typename Kokkos::TeamPolicy<DeviceType, CalcAlphaBasic>::member_type &team) const;
+  void
+  operator()(TagPairMTPCalcAlphaBasic,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPCalcAlphaBasic>::member_type
+                 &team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPCalcAlphaTimes, const int &ii) const;
 
  protected:
   int chunk_size;    // Needed to process the computation in batches to avoid running out of VRAM.

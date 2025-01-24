@@ -252,24 +252,86 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       MIN(chunksize, inum);    // chunksize is the maximum atoms per pass as defined by the user
   chunk_offset = 0;
 
+  // Team sizes. We specify 32 for 1 warp per thread block.
+  // Maybe need 64 for AMD?
+  int team_size_default = 1;
+  int vector_length_default = 1;
+  if (!host_flag) team_size_default = 32;
+
   // Resize the jacobian, maybe we can get rid of this resize in every compute call. Do not initalize, we do so in the loop.
   Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size,
                   alpha_index_basic_count, max_neighs, 3);
 
+  EV_FLOAT ev;
+
   // ========== Begin Core Computation ==========
   while (chunk_offset < inum) {    // batching to prevent OOM on device
+    EV_FLOAT ev_tmp;
     if (chunk_size > inum - chunk_offset) chunk_size = inum - chunk_offset;
 
     // First reset the working arrays from the last batch
-    Kokkos::Experimental::fill(Kokkos::DefaultExecutionSpace(), d_moment_jacobian, 0.0);
-    Kokkos::Experimental::fill(Kokkos::DefaultExecutionSpace(), d_moment_tensor_vals, 0.0);
-    Kokkos::Experimental::fill(Kokkos::DefaultExecutionSpace(), d_nbh_energy_ders_wrt_moments, 0.0);
+    Kokkos::Experimental::fill(execution_space, d_moment_jacobian, 0.0);
+    Kokkos::Experimental::fill(execution_space, d_moment_tensor_vals, 0.0);
+    Kokkos::Experimental::fill(execution_space, d_nbh_energy_ders_wrt_moments, 0.0);
 
-    // ========== Calculate the basis alphas (Per outer-atom parallelizaton) ==========
+    // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
+    {
+      int team_size = team_size_default;
+      int vector_length = vector_length_default;
+      check_team_size_for<TagPairMTPCalcAlphaBasic>(chunk_size, team_size, vector_length);
+      int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
+      int dist_coords_scratch_count = 4 * max_alpha_index_basic;
+      int scratch_size =
+          scratch_size_helper<F_FLOAT>(team_size * (radial_scratch_count + dist_coords_count));
+      Kokkos::TeamPolicy<DeviceType, TagPairMTPCalcAlphaBasic> policy_basic_alpha(
+          chunk_size, team_size, vector_length);
+      policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+      Kokkos::parallel_for("CalcAlphaBasic", policy_basic_alpha, *this);
+    }
+
+    // ========== Calculate the non-elementary alphas (Per neighbourhood parallelizaton ) ==========
+    // This can be parallelized with dependence analysis. Worth exploring later although it shouldn't make a big difference for atom count much lower than chunk_size.
+    {typename Kokkos::RangePolicy<DeviceType, CalcAlphaTimes>}
 
     chunk_offset += chunk_size;    // Manage halt condition
   }    // end batching while loop
+
   // ========== End Core Computation ==========
+
+  if (need_dup) Kokkos::Experimental::contribute(f, dup_f);
+
+  if (eflag_global) eng_vdwl += ev.evdwl;
+  if (vflag_global) {
+    virial[0] += ev.v[0];
+    virial[1] += ev.v[1];
+    virial[2] += ev.v[2];
+    virial[3] += ev.v[3];
+    virial[4] += ev.v[4];
+    virial[5] += ev.v[5];
+  }
+
+  if (vflag_fdotr) pair_virial_fdotr_compute(this);
+
+  if (eflag_atom) {
+    k_eatom.template modify<DeviceType>();
+    k_eatom.template sync<LMPHostType>();
+  }
+
+  if (vflag_atom) {
+    if (need_dup) Kokkos::Experimental::contribute(d_vatom, dup_vatom);
+    k_vatom.template modify<DeviceType>();
+    k_vatom.template sync<LMPHostType>();
+  }
+
+  atomKK->modified(execution_space, F_MASK);
+
+  copymode = 0;
+
+  // free duplicated memory
+  if (need_dup) {
+    dup_f = decltype(dup_f)();
+    dup_vatom = decltype(dup_vatom)();
+  }
 
   //Clean up scatter views
 }
@@ -296,17 +358,18 @@ template <class DeviceType> struct FindMaxNumNeighs {
 // Calculates the basic alphas
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
-    CalcAlphaBasic,
-    const typename Kokkos::TeamPolicy<DeviceType, CalcAlphaBasic>::member_type &team) const
+    TagPairMTPCalcAlphaBasic,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPCalcAlphaBasic>::member_type &team)
+    const
 {
   // Extract the atom number
   int ii = team.team_rank() + team.league_rank() * team.team_size();
   if (ii >= chunk_size) return;
 
   // Get information about the central atom
-  const int i = d_ilist[ii + chunk_offset] - 1;    // switch to zero indexing
+  const int i = d_ilist[ii + chunk_offset];
   const double xi[3] = {x[i][0], x[i][1], x[i][2]};
-  const int itype = type[i];
+  const int itype = type[i] - 1;    // switch to zero indexing
   const int num_neighs = d_numneigh[i];
 
   // If precomputing everything is too much memory, we can consider calculating dist powers and coord powers on-the-fly?
@@ -422,3 +485,47 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     }
   });
 };
+
+// Calculates the non-elementary alpha from the basic alphas
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcAlphaTimes,
+                                                                  const int &ii) const
+{
+  const int i = d_ilist[ii + chunk_offset];    // Get atom id
+
+  // Traverse all edges in a compute graph
+  for (int k = 0; k < alpha_index_times_count; k++) {
+    int input0_index = d_alpha_index_times(k, 0);
+    int input1 _index = d_alpha_index_times(k, 1);
+    int output_index = d_alpha_index_times(k, 2);
+    int multipiler = d_alpha_index_times(k, 3);
+
+    F_FLOAT val0 = moment_tensor_vals(i, input0_index);
+    F_FLOAT val1 = moment_tensor_vals(i, input1 _index);
+    moment_tensor_vals(i, output_index) += multipiler * val0 * val1;
+  }
+}
+
+// =========== Helper Functions ===========
+template <class DeviceType>
+template <class TagStyle>
+void PairMTPKokkos<DeviceType>::check_team_size_for(int inum, int &team_size, int vector_length)
+{
+  int team_size_max;
+
+  team_size_max = Kokkos::TeamPolicy<DeviceType, TagStyle>(inum, Kokkos::AUTO)
+                      .team_size_max(*this, Kokkos::ParallelForTag());
+
+  if (team_size * vector_length > team_size_max) team_size = team_size_max / vector_length;
+}
+
+template <class DeviceType>
+template <typename scratch_type>
+int PairMTPKokkos<DeviceType>::scratch_size_helper(int values_per_team)
+{
+  typedef Kokkos::View<scratch_type *, Kokkos::DefaultExecutionSpace::scratch_memory_space,
+                       Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      ScratchViewType;
+
+  return ScratchViewType::shmem_size(values_per_team);
+}
