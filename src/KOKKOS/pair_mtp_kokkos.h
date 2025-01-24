@@ -36,6 +36,7 @@ namespace LAMMPS_NS {
 // Structs for kernels go here
 struct TagPairMTPCalcAlphaBasic {};
 struct TagPairMTPCalcAlphaTimes {};
+struct TagPairMTPCalcAlphaMap {};
 
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
@@ -67,6 +68,9 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
 
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPCalcAlphaTimes, const int &ii) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPCalcAlphaMap, const int &ii) const;
 
  protected:
   int chunk_size;    // Needed to process the computation in batches to avoid running out of VRAM.

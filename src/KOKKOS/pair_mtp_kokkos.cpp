@@ -64,15 +64,13 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::init_style()
 {
   if (host_flag) {
     if (lmp->kokkos->nthreads > 1)
-      error->all(FLERR,
-                 "Pair style mtp/kk can currently only run on a single."
-                 "CPU thread");
+      error->all(FLERR, "Pair style mtp/kk can currently only run on a single CPU thread.");
 
     PairPACE::init_style();
     return;
   }
 
-  if (force->newton_pair == 0) error->all(FLERR, "Pair style MTP requires newton pair on");
+  if (force->newton_pair == 0) error->all(FLERR, "Pair style MTP requires newton pair on.");
 
   // neighbor list request for KOKKOS
   neighflag = lmp->kokkos->neighflag;
@@ -81,7 +79,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::init_style()
   request->set_kokkos_host(std::is_same_v<DeviceType, LMPHostType> &&
                            !std::is_same_v<DeviceType, LMPDeviceType>);
   request->set_kokkos_device(std::is_same_v<DeviceType, LMPDeviceType>);
-  if (neighflag == FULL) error->all(FLERR, "Must use half neighbor list style with pair pace/kk");
+  if (neighflag == FULL) error->all(FLERR, "Must use half neighbor list style with pair pace/kk.");
 }
 
 /* ----------------------------------------------------------------------
@@ -117,7 +115,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
 
   if (narg != 3 || arg[1] != "chunksize")
     error->all(FLERR,
-               "Pair MTP requires 3 arguments {potential_file}, \"chunksize\", {chunksize}".);
+               "Pair MTP requires 3 arguments {potential_file}, \"chunksize\", {chunksize}.");
 
   chunksize = utils::inumeric(FLERR, arg[2], true, lmp);
 
@@ -216,7 +214,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
   copymode = 1;
   int newton_pair = force->newton_pair;
-  if (newton_pair == false) error->all(FLERR, "PairMTPKokkos requires 'newton on'");
+  if (newton_pair == false) error->all(FLERR, "PairMTPKokkos requires 'newton on'.");
 
   // Now, ensure the atom data is synced
   atomKK->sync(execution_space, X_MASK | F_MASK | TYPE_MASK);
@@ -291,7 +289,17 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
     // ========== Calculate the non-elementary alphas (Per neighbourhood parallelizaton ) ==========
     // This can be parallelized with dependence analysis. Worth exploring later although it shouldn't make a big difference for atom count much lower than chunk_size.
-    {typename Kokkos::RangePolicy<DeviceType, CalcAlphaTimes>}
+    {
+      typename ::Kokkos::RangePolicy<DeviceType, TagPairMTPCalcAlphaTimes> policy_times(0,
+                                                                                        chunk_size);
+      Kokkos::parallel_for("CalcAlphaTimes", policy_times, *this);
+    }
+
+    // ========== Calculate the energy by convolving with select alphas ==========
+    if (eflag || eflag_atom) {
+      typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcAlphaMap> policy_map(0, chunk_size);
+      Kokkos::parallel_for("CalcAlphaMap", policy_map, *this);
+    }
 
     chunk_offset += chunk_size;    // Manage halt condition
   }    // end batching while loop
@@ -484,7 +492,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       //     val * a2 * pow0 * pow1 * s_coord_powers(jj, Kokkos::max(a2 - 1, 1), 2);
     }
   });
-};
+}
 
 // Calculates the non-elementary alpha from the basic alphas
 template <class DeviceType>
@@ -504,6 +512,25 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalc
     F_FLOAT val1 = moment_tensor_vals(i, input1 _index);
     moment_tensor_vals(i, output_index) += multipiler * val0 * val1;
   }
+}
+
+// Calculates the neighbourhood energy by convolving with specific alphas
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcAlphaMap,
+                                                                  const int &ii) const
+{
+  const int i = d_ilist[ii + chunk_offset];    // Get atom id
+  const int itype = type[i] - 1;               // switch to zero indexing for type
+  F_FLOAT nbh_energy =
+      d_species_coeffs[itype];    // Essentially the reference point energy per species
+
+  // Take the linear combination of the basis set and the learned coefficients. This could probably be a reductions but if threads are  saturated, there should be little difference.
+  for (int k = 0; k < alpha_scalar_count; k++) {
+    basis_member_index = d_alpha_moment_mapping[k];
+    nbh_energy += linear_coeffs[k] * moment_tensor_vals[basis_member_index];
+  }
+
+  d_eatom(ii) = nbh_energy;
 }
 
 // =========== Helper Functions ===========
