@@ -262,14 +262,12 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
   EV_FLOAT ev;
 
-  // ========== Begin Core Computation ==========
+  // ========== Begin Main Computation ==========
   while (chunk_offset < inum) {    // batching to prevent OOM on device
     EV_FLOAT ev_tmp;
     if (chunk_size > inum - chunk_offset) chunk_size = inum - chunk_offset;
 
-    // First reset the working arrays from the last batch
-    Kokkos::Experimental::fill(execution_space, d_moment_jacobian, 0.0);
-    Kokkos::Experimental::fill(execution_space, d_moment_tensor_vals, 0.0);
+    // First reset the working arrays from the last baCoreoment_tensor_vals, 0.0);
     Kokkos::Experimental::fill(execution_space, d_nbh_energy_ders_wrt_moments, 0.0);
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
@@ -304,7 +302,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     chunk_offset += chunk_size;    // Manage halt condition
   }    // end batching while loop
 
-  // ========== End Core Computation ==========
+  // ========== End Main Computation ==========
 
   if (need_dup) Kokkos::Experimental::contribute(f, dup_f);
 
@@ -376,7 +374,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
 
   // Get information about the central atom
   const int i = d_ilist[ii + chunk_offset];
-  const double xi[3] = {x[i][0], x[i][1], x[i][2]};
+  const double xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
   const int itype = type[i] - 1;    // switch to zero indexing
   const int num_neighs = d_numneigh[i];
 
@@ -499,24 +497,24 @@ template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcAlphaTimes,
                                                                   const int &ii) const
 {
-  const int i = d_ilist[ii + chunk_offset];    // Get atom id
-
   // Traverse all edges in a compute graph
   for (int k = 0; k < alpha_index_times_count; k++) {
-    int input0_index = d_alpha_index_times(k, 0);
-    int input1 _index = d_alpha_index_times(k, 1);
-    int output_index = d_alpha_index_times(k, 2);
-    int multipiler = d_alpha_index_times(k, 3);
+    int a0 = d_alpha_index_times(k, 0);
+    int a1 = d_alpha_index_times(k, 1);
+    int multipiler = d_alpha_index_times(k, 2);
+    int a3 = d_alpha_index_times(k, 3);
 
-    F_FLOAT val0 = moment_tensor_vals(i, input0_index);
-    F_FLOAT val1 = moment_tensor_vals(i, input1 _index);
-    moment_tensor_vals(i, output_index) += multipiler * val0 * val1;
+    F_FLOAT val0 = moment_tensor_vals(ii, a0);
+    int val2 = d_alpha_index_times(k, 2);
+
+    moment_tensor_vals(i, a3) += multipiler * val0 * val1;
   }
 }
 
 // Calculates the neighbourhood energy by convolving with specific alphas
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcAlphaMap,
+template <int EVFLAG>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcAlphaMap<EVFLAG>,
                                                                   const int &ii) const
 {
   const int i = d_ilist[ii + chunk_offset];    // Get atom id
@@ -526,11 +524,86 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalc
 
   // Take the linear combination of the basis set and the learned coefficients. This could probably be a reductions but if threads are  saturated, there should be little difference.
   for (int k = 0; k < alpha_scalar_count; k++) {
-    basis_member_index = d_alpha_moment_mapping[k];
-    nbh_energy += linear_coeffs[k] * moment_tensor_vals[basis_member_index];
+    basis_member_index = d_alpha_moment_mapping(k);
+    nbh_energy += d_linear_coeffs(k) * d_moment_tensor_vals(ii, basis_member_index);
   }
 
-  d_eatom(ii) = nbh_energy;
+  // We might need this if statement since we will only run this kernel if we wants energies
+  if (EVFLAG && eflag_either) {
+    if (eflag_global) ev.evdwl += nbh_energy;
+    if (eflag_atom) d_eatom[i] += nbh_energy;
+  }
+}
+
+// Initializes the nbh energy ders as the linear coeffs
+// There might be efficient improvement by combining this kernel with the next step? Look into this.
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitNbhDers,
+                                                                  const int &ii) const
+{
+  for (int k = 0; k < alpha_scalar_count; k++)
+    d_nbh_energy_ders_wrt_moments(ii, k) = linear_coeffs[k];
+}
+
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcNbhDers,
+                                                                  const int &ii) const
+{
+  for (int k = alpha_index_times_count - 1; k >= 0; k--) {
+    int a0 = d_alpha_index_times(k, 0);
+    int a1 = d_alpha_index_times(k, 1);
+    int multipiler = d_alpha_index_times(k, 2);
+    int a3 = d_alpha_index_times(k, 3);
+
+    F_FLOAT val0 = d_moment_tensor_vals(ii, a0);
+    F_FLOAT val1 = d_moment_tensor_vals(ii, a1);
+    F_FLOAT val3 = d_moment_tensor_vals(ii, a3);
+
+    Kokkos::atomic_add(&d_nbh_energy_ders_wrt_moments(ii, a1), val3 * multipiler * val0);
+    Kokkos::atomic_add(&d_nbh_energy_ders_wrt_moments(ii, a0), val3 * multipiler * val1);
+  }
+}
+
+template <class DeviceType>
+template <int NEIGHFLAG, int EVFLAG>
+KOKKOS_INLINE_FUNCTION void
+PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, const int &ii) const
+{
+
+  // The f array is duplicated for OpenMP, atomic for GPU, and neither for Serial
+  auto v_f =
+      ScatterViewHelper<NeedDup_v<NEIGHFLAG, DeviceType>, decltype(dup_f), decltype(ndup_f)>::get(
+          dup_f, ndup_f);
+  auto a_f = v_f.template access<AtomicDup_v<NEIGHFLAG, DeviceType>>();
+
+  const int i = d_ilist[ii + chunk_offset];
+  const int itype = type(i) - 1;    // zero indexing
+  const double xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
+
+  for (int jj = 0; jj < jnum; jj++) {
+    int j = firstneigh[i][jj];
+    j &= NEIGHMASK;
+    F_FLOAT temp_force[3] = {0, 0, 0};
+    for (int k = 0; k < alpha_index_basic_count; k++)
+      for (int a = 0; a < 3; a++) {
+        //Calculate forces
+        temp_force[a] += d_nbh_energy_ders_wrt_moments(k) * d_moment_jacobian(ii, k, jj, a);
+      }
+
+    a_f(i, 0) += temp_force[0];
+    a_f(i, 1) += temp_force[1];
+    a_f(i, 2) += temp_force[2];
+
+    a_f(j, 0) -= temp_force[0];
+    a_f(j, 1) -= temp_force[1];
+    a_f(j, 2) -= temp_force[2];
+
+    if (EVFLAG && eflag_either) {
+      double r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
+      v_tally_xyz<NEIGHFLAG>(ev, i, j, temp_force[0], temp_force[1], temp_force[2], r[0], r[1],
+                             r[2]);
+    }
+  }
 }
 
 // =========== Helper Functions ===========

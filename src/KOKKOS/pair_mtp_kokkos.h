@@ -36,7 +36,10 @@ namespace LAMMPS_NS {
 // Structs for kernels go here
 struct TagPairMTPCalcAlphaBasic {};
 struct TagPairMTPCalcAlphaTimes {};
-struct TagPairMTPCalcAlphaMap {};
+template <int EVFLAG> struct TagPairMTPCalcAlphaMap {};
+struct TagPairMTPInitNbhDers {};
+struct TagPairMTPCalcNbhDers {};
+template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPCalcForces {};
 
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
@@ -69,8 +72,18 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPCalcAlphaTimes, const int &ii) const;
 
+  template <int EVFLAG>
+  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPCalcAlphaMap<EVFLAG>, const int &ii) const;
+
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPCalcAlphaMap, const int &ii) const;
+  void operator()(TagPairMTPInitNbhDers, const int &ii) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPCalcNbhDers, const int &ii) const;
+
+  template <int NEIGHFLAG, int EVFLAG>
+  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>,
+                                         const int &ii) const;
 
  protected:
   int chunk_size;    // Needed to process the computation in batches to avoid running out of VRAM.
@@ -134,9 +147,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
 
   template <typename DataType, typename Layout>
   using NonDupScatterView =
-      KKScatterView<DataType, Layout, KKDeviceType, KKScatterSum, KKScatterNonDuplicated>;
-
-  DupScatterView<F_FLOAT *[3], typename DAT::t_f_array::array_layout> dup_f;
+      Core DupScatterView<F_FLOAT *[3], typename DAT::t_f_array::array_layout> dup_f;
   DupScatterView<F_FLOAT *[6], typename DAT::t_virial_array::array_layout> dup_vatom;
 
   NonDupScatterView<F_FLOAT *[3], typename DAT::t_f_array::array_layout> ndup_f;
