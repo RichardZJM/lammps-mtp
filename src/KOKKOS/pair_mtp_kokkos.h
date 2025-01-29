@@ -34,11 +34,11 @@ PairStyle(mtp/kk/host,PairMTPKokkos<LMPHostType>);
 namespace LAMMPS_NS {
 
 // Structs for kernels go here
-struct TagPairMTPCalcAlphaBasic {};
-struct TagPairMTPCalcAlphaTimes {};
+struct TagPairMTPComputeAlphaBasic {};
+struct TagPairMTPComputeAlphaTimes {};
 struct TagPairMTPInitNbhDers {};
-struct TagPairMTPCalcNbhDers {};
-template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPCalcForces {};
+struct TagPairMTPComputeNbhDers {};
+template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
@@ -72,26 +72,26 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   // MTP routines
   KOKKOS_INLINE_FUNCTION
   void
-  operator()(TagPairMTPCalcAlphaBasic,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPCalcAlphaBasic>::member_type
+  operator()(TagPairMTPComputeAlphaBasic,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type
                  &team) const;
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPCalcAlphaTimes, const int &ii) const;
+  void operator()(TagPairMTPComputeAlphaTimes, const int &ii) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPInitNbhDers, const int &ii) const;
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPCalcNbhDers, const int &ii) const;
+  void operator()(TagPairMTPComputeNbhDers, const int &ii) const;
 
   template <int NEIGHFLAG, int EVFLAG>
   KOKKOS_INLINE_FUNCTION void
-  operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>,
+  operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
              const int &ii) const;    // This eventually calls the below version
 
   template <int NEIGHFLAG, int EVFLAG>
-  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, const int &ii,
+  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
                                          EV_FLOAT &) const;    // With global energy reduction
 
  protected:
