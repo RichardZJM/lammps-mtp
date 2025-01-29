@@ -288,17 +288,53 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     // ========== Calculate the non-elementary alphas (Per neighbourhood parallelizaton ) ==========
     // This can be parallelized with dependence analysis. Worth exploring later although it shouldn't make a big difference for atom count much lower than chunk_size.
     {
-      typename ::Kokkos::RangePolicy<DeviceType, TagPairMTPCalcAlphaTimes> policy_times(0,
-                                                                                        chunk_size);
+      typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcAlphaTimes> policy_times(0,
+                                                                                      chunk_size);
       Kokkos::parallel_for("CalcAlphaTimes", policy_times, *this);
     }
 
-    // ========== Calculate the energy by convolving with select alphas ==========
-    if (eflag || eflag_atom) {
-      typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcAlphaMap> policy_map(0, chunk_size);
-      Kokkos::parallel_for("CalcAlphaMap", policy_map, *this);
+    // ========== We don't acutally need the nbh energy to get forces.==========
+    // We can skip that step and conditionally run it in the calc forces kernel
+
+    // ========== Init the nbh ders wrt moments ==========
+    {
+      typename Kokkos::RangePolicy<DeviceType, TagPairMTPInitNbhDers> policy_nbh_init(0,
+                                                                                      chunk_size);
+      Kokkos::parallel_for("InitNbhDers")
     }
 
+    // ========== Calc the nbh ders wrt moments ==========
+    {
+      typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcNbhDers> policy_nbh_calc(0,
+                                                                                      chunk_size);
+      Kokkos::parallel_for("CalcNbhDers")
+    }
+
+    // ========== Compute force (and convolve alphas to get energy if needed) ==========
+    {
+      if (evflag) {
+        if (neighflag == HALF) {
+          typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcForces<HALF, 1>> policy_force(
+              0, chunk_size);
+          Kokkos::parallel_reduce(policy_force, *this, ev_tmp);
+        } else if (neighflag == HALFTHREAD) {
+          typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcForces<HALFTHREAD, 1>>
+              policy_force(0, chunk_size);
+          Kokkos::parallel_reduce(policy_force, *this, ev_tmp);
+        }
+      } else {
+        if (neighflag == HALF) {
+          typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcForces<HALF, 0>> policy_force(
+              0, chunk_size);
+          Kokkos::parallel_for(policy_force, *this);
+        } else if (neighflag == HALFTHREAD) {
+          typename Kokkos::RangePolicy<DeviceType, TagPairMTPCalcForces<HALFTHREAD, 0>>
+              policy_force(0, chunk_size);
+          Kokkos::parallel_for(policy_force, *this);
+        }
+      }
+    }
+    ev += ev_tmp;
     chunk_offset += chunk_size;    // Manage halt condition
   }    // end batching while loop
 
@@ -338,8 +374,6 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     dup_f = decltype(dup_f)();
     dup_vatom = decltype(dup_vatom)();
   }
-
-  //Clean up scatter views
 }
 
 // ========== Kernels ==========
@@ -388,7 +422,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
   // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
 
   Kokkos::parallel_for(TeamThreadTrange(team, jnum), [=](const int jj) {
-    int j = d_neighbors(i, jj);
+    int j = d_neighbors[i, jj];
     j &= NEIGHMASK;
     const int jtype = type(j) - 1;    // switch to zero indexing
     const double r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
@@ -511,30 +545,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalc
   }
 }
 
-// Calculates the neighbourhood energy by convolving with specific alphas
-template <class DeviceType>
-template <int EVFLAG>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcAlphaMap<EVFLAG>,
-                                                                  const int &ii) const
-{
-  const int i = d_ilist[ii + chunk_offset];    // Get atom id
-  const int itype = type[i] - 1;               // switch to zero indexing for type
-  F_FLOAT nbh_energy =
-      d_species_coeffs[itype];    // Essentially the reference point energy per species
-
-  // Take the linear combination of the basis set and the learned coefficients. This could probably be a reductions but if threads are  saturated, there should be little difference.
-  for (int k = 0; k < alpha_scalar_count; k++) {
-    basis_member_index = d_alpha_moment_mapping(k);
-    nbh_energy += d_linear_coeffs(k) * d_moment_tensor_vals(ii, basis_member_index);
-  }
-
-  // We might need this if statement since we will only run this kernel if we wants energies
-  if (EVFLAG && eflag_either) {
-    if (eflag_global) ev.evdwl += nbh_energy;
-    if (eflag_atom) d_eatom[i] += nbh_energy;
-  }
-}
-
 // Initializes the nbh energy ders as the linear coeffs
 // There might be efficient improvement by combining this kernel with the next step? Look into this.
 template <class DeviceType>
@@ -567,7 +577,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalc
 template <class DeviceType>
 template <int NEIGHFLAG, int EVFLAG>
 KOKKOS_INLINE_FUNCTION void
-PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, const int &ii) const
+PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, const int &ii,
+                                      EV_FLOAT &ev) const
 {
 
   // The f array is duplicated for OpenMP, atomic for GPU, and neither for Serial
@@ -581,7 +592,7 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, c
   const double xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
 
   for (int jj = 0; jj < jnum; jj++) {
-    int j = firstneigh[i][jj];
+    int j = d_neighbors[i][jj];
     j &= NEIGHMASK;
     F_FLOAT temp_force[3] = {0, 0, 0};
     for (int k = 0; k < alpha_index_basic_count; k++)
@@ -604,9 +615,80 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, c
                              r[2]);
     }
   }
+
+  if (EVFLAG && eflag_either) {
+    const int i = d_ilist[ii + chunk_offset];    // Get atom id
+    const int itype = type[i] - 1;               // switch to zero indexing for type
+    F_FLOAT nbh_energy =
+        d_species_coeffs[itype];    // Essentially the reference point energy per species
+
+    // Take the linear combination of the basis set and the learned coefficients. This could probably be a reductions but if threads are  saturated, there should be little difference.
+    for (int k = 0; k < alpha_scalar_count; k++) {
+      basis_member_index = d_alpha_moment_mapping(k);
+      nbh_energy += d_linear_coeffs(k) * d_moment_tensor_vals(ii, basis_member_index);
+    }
+
+    if (eflag_global) ev.evdwl += nbh_energy;
+    if (eflag_atom) d_eatom[i] += nbh_energy;
+  }
 }
 
-// =========== Helper Functions ===========
+template <class DeviceType>
+template <int NEIGHFLAG, int EVFLAG>
+KOKKOS_INLINE_FUNCTION void
+PairMTPKokkos<DeviceType>::operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, const int &ii) const
+{
+  EV_FLOAT ev;
+  this->template operator()<NEIGHFLAG, EVFLAG>(TagPairSNAPComputeForce<NEIGHFLAG, EVFLAG>(), ii,
+                                               ev);
+}
+
+// =========== Helper Functions (Also used in other Kokkos potentials)===========
+template <class DeviceType>
+template <int NEIGHFLAG>
+KOKKOS_INLINE_FUNCTION void
+PairMTPKokkos<DeviceType>::v_tally_xyz(EV_FLOAT &ev, const int &i, const int &j, const F_FLOAT &fx,
+                                       const F_FLOAT &fy, const F_FLOAT &fz, const F_FLOAT &delx,
+                                       const F_FLOAT &dely, const F_FLOAT &delz) const
+{
+  // The vatom array is duplicated for OpenMP, atomic for GPU, and neither for Serial
+
+  auto v_vatom = ScatterViewHelper<NeedDup_v<NEIGHFLAG, DeviceType>, decltype(dup_vatom),
+                                   decltype(ndup_vatom)>::get(dup_vatom, ndup_vatom);
+  auto a_vatom = v_vatom.template access<AtomicDup_v<NEIGHFLAG, DeviceType>>();
+
+  const E_FLOAT v0 = delx * fx;
+  const E_FLOAT v1 = dely * fy;
+  const E_FLOAT v2 = delz * fz;
+  const E_FLOAT v3 = delx * fy;
+  const E_FLOAT v4 = delx * fz;
+  const E_FLOAT v5 = dely * fz;
+
+  if (vflag_global) {
+    ev.v[0] += v0;
+    ev.v[1] += v1;
+    ev.v[2] += v2;
+    ev.v[3] += v3;
+    ev.v[4] += v4;
+    ev.v[5] += v5;
+  }
+
+  if (vflag_atom) {
+    a_vatom(i, 0) += 0.5 * v0;
+    a_vatom(i, 1) += 0.5 * v1;
+    a_vatom(i, 2) += 0.5 * v2;
+    a_vatom(i, 3) += 0.5 * v3;
+    a_vatom(i, 4) += 0.5 * v4;
+    a_vatom(i, 5) += 0.5 * v5;
+    a_vatom(j, 0) += 0.5 * v0;
+    a_vatom(j, 1) += 0.5 * v1;
+    a_vatom(j, 2) += 0.5 * v2;
+    a_vatom(j, 3) += 0.5 * v3;
+    a_vatom(j, 4) += 0.5 * v4;
+    a_vatom(j, 5) += 0.5 * v5;
+  }
+}
+
 template <class DeviceType>
 template <class TagStyle>
 void PairMTPKokkos<DeviceType>::check_team_size_for(int inum, int &team_size, int vector_length)

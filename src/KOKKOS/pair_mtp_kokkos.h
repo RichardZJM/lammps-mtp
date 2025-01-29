@@ -36,7 +36,6 @@ namespace LAMMPS_NS {
 // Structs for kernels go here
 struct TagPairMTPCalcAlphaBasic {};
 struct TagPairMTPCalcAlphaTimes {};
-template <int EVFLAG> struct TagPairMTPCalcAlphaMap {};
 struct TagPairMTPInitNbhDers {};
 struct TagPairMTPCalcNbhDers {};
 template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPCalcForces {};
@@ -60,9 +59,17 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   // ========== Kokkos kernels ==========
   //Utility routines
   template <class TagStyle> void check_team_size_for(int, int &, int);
+
   template <typename scratch_type>
   int scratch_size_helper(int values_per_team);    // Helps calcs scratch size for calcalphabasic
 
+  template <int NEIGHFLAG>
+  KOKKOS_INLINE_FUNCTION void v_tally_xyz(EV_FLOAT &ev, const int &i, const int &j,
+                                          const F_FLOAT &fx, const F_FLOAT &fy, const F_FLOAT &fz,
+                                          const F_FLOAT &delx, const F_FLOAT &dely,
+                                          const F_FLOAT &delz) const;
+
+  // MTP routines
   KOKKOS_INLINE_FUNCTION
   void
   operator()(TagPairMTPCalcAlphaBasic,
@@ -72,9 +79,6 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPCalcAlphaTimes, const int &ii) const;
 
-  template <int EVFLAG>
-  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPCalcAlphaMap<EVFLAG>, const int &ii) const;
-
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPInitNbhDers, const int &ii) const;
 
@@ -82,8 +86,13 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   void operator()(TagPairMTPCalcNbhDers, const int &ii) const;
 
   template <int NEIGHFLAG, int EVFLAG>
-  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>,
-                                         const int &ii) const;
+  KOKKOS_INLINE_FUNCTION void
+  operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>,
+             const int &ii) const;    // This eventually calls the below version
+
+  template <int NEIGHFLAG, int EVFLAG>
+  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPCalcForces<NEIGHFLAG, EVFLAG>, const int &ii,
+                                         EV_FLOAT &) const;    // With global energy reduction
 
  protected:
   int chunk_size;    // Needed to process the computation in batches to avoid running out of VRAM.
@@ -104,11 +113,11 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   typename AT::t_virial_array d_vatom;
 
   typename AT::t_x_array_randomread x;
+  // TODO: DOUBLE CHECK THE LAYOUTS!!!!
   typename AT::t_f_array f;
   typename AT::t_int_1d_randomread type;
 
   // ---------- Device Arrays  ----------
-  // TODO: DOUBLE CHECK THE LAYOUTS!!!!
   // Alphas indicies
   Kokkos::View<int **, DeviceType> d_alpha_index_basic;    // For constructing the basic alphas.
   Kokkos::View<int **, DeviceType> d_alpha_index_times;    // For combining alphas
