@@ -112,9 +112,9 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
   // We may need to process in chunks to deal with memory limitations
   // For now we expect the user to specify the chunk size
 
-  if (narg != 3 || arg[1] != "chunksize")
+  if (narg != 3 || LAMMPS_NS::utils::lowercase(arg[1]) != "chunksize")
     error->all(FLERR,
-               "Pair mtp/kk requires 3 arguments {potential_file}, \"chunksize\", {chunksize}.");
+               "Pair mtp/kk requires 3 arguments {{potential_file} \"chunksize\" {chunksize}}.");
 
   chunk_size = utils::inumeric(FLERR, arg[2], true, lmp);
 
@@ -573,8 +573,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
     F_FLOAT val1 = d_moment_tensor_vals(ii, a1);
     F_FLOAT val3 = d_moment_tensor_vals(ii, a3);
 
-    Kokkos::atomic_add(&d_nbh_energy_ders_wrt_moments(ii, a1), val3 * multipiler * val0);
-    Kokkos::atomic_add(&d_nbh_energy_ders_wrt_moments(ii, a0), val3 * multipiler * val1);
+    d_nbh_energy_ders_wrt_moments(ii, a1) += val3 * multipiler * val0;
+    d_nbh_energy_ders_wrt_moments(ii, a0) += val3 * multipiler * val1;
   }
 }
 

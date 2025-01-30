@@ -85,3 +85,4 @@ testRef3.dump
 test3.dump
 lib/kokkos/Makefile.kokkos
 */Makefile.kokkos_cuda_mpi
+src/KOKKOS/Install.sh
