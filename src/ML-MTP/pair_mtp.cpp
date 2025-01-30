@@ -77,8 +77,8 @@ void PairMTP::compute(int eflag, int vflag)
   double **f = atom->f;      // atomic forces
   int *type = atom->type;    //atomic types
 
-  int nlocal = atom->nlocal;
-  int newton_pair = force->newton_pair;
+  // int nlocal = atom->nlocal; // Don't really need this
+  // int newton_pair = force->newton_pair; // Newton pair is forced on
 
   int inum = list->inum;             // The number of central atoms (neigbhourhoods)
   int *ilist = list->ilist;          // List of the central atoms in order
@@ -88,7 +88,7 @@ void PairMTP::compute(int eflag, int vflag)
 
   // Loop over all provided neighbourhoods
   for (int ii = 0; ii < inum; ii++) {
-    const int i = list->ilist[ii];    // Set central atom index
+    const int i = ilist[ii];          // Set central atom index
     const int itype = type[i] - 1;    // Set central atom type. Convert back to zero indexing.
     if (itype >= species_count)
       error->all(FLERR,
@@ -614,6 +614,7 @@ Might be able to replace that section with next_values which is in both TFR and 
   MPI_Bcast(&radial_basis->max_cutoff, 1, MPI_DOUBLE, 0, world);
   min_cutoff = radial_basis->min_cutoff;
   max_cutoff = radial_basis->max_cutoff;
+  max_cutoff_sq = max_cutoff * max_cutoff;
 
   //Now we B Cast into arrays
   //Flags
