@@ -281,14 +281,18 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     EV_FLOAT ev_tmp;
     if (chunk_size > inum - chunk_offset) chunk_size = inum - chunk_offset;
 
-    // First reset the working arrays from the last calc. Also, we need iterators for non-rank1 views
-    // Kokkos::Experimental::fill(execution_space,
-    //                            Kokkos::Experimental::begin(d_nbh_energy_ders_wrt_moments),
-    //                            Kokkos::Experimental::end(d_nbh_energy_ders_wrt_moments), 0.0);
-    // Kokkos::Experimental::fill(execution_space, Kokkos::Experimental::begin(d_moment_jacobian),
-    //                            Kokkos::Experimental::end(d_moment_jacobian), 0.0);
-    // Kokkos::Experimental::fill(execution_space, Kokkos::Experimental::begin(d_moment_tensor_vals),
-    //                            Kokkos::Experimental::end(d_moment_tensor_vals), 0.0);
+    // ========== Init working view as 0  ==========
+    {
+      {
+        typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
+            policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
+        Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
+
+        typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentJac>
+            policy_jac_init({0, 0}, {chunk_size, alpha_moment_count});
+        Kokkos::parallel_for("InitMomentJac", policy_jac_init, *this);
+      }
+    }
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
@@ -302,7 +306,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(
           chunk_size, team_size, vector_length);
       policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
-      Kokkos::parallel_for("CalcAlphaBasic", policy_basic_alpha, *this);
+      Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
     }
 
     // ========== Calculate the non-elementary alphas (Per neighbourhood parallelizaton ) ==========
@@ -313,24 +317,21 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     {
       typename Kokkos::RangePolicy<DeviceType, TagPairMTPComputeAlphaTimes> policy_times(
           0, chunk_size);
-      Kokkos::parallel_for("CalcAlphaTimes", policy_times, *this);
+      Kokkos::parallel_for("ComputeAlphaTimes", policy_times, *this);
     }
 
-    // ========== We don't acutally need the nbh energy to get forces.==========
-    // We can skip that step and conditionally run it in the calc forces kernel
-
-    // ========== Init the nbh ders wrt moments ==========
+    // ========== Set the scalar nbh ders wrt moments ==========
     {
-      typename Kokkos::RangePolicy<DeviceType, TagPairMTPInitNbhDers> policy_nbh_init(0,
-                                                                                      chunk_size);
-      Kokkos::parallel_for("InitNbhDers", policy_nbh_init, *this);
+      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPSetScalarNbhDers>
+          policy_nbh_init({0, 0}, {chunk_size, alpha_scalar_count});
+      Kokkos::parallel_for("SetScalarNbhDers", policy_nbh_init, *this);
     }
 
     // ========== Calc the nbh ders wrt moments ==========
     {
       typename Kokkos::RangePolicy<DeviceType, TagPairMTPComputeNbhDers> policy_nbh_calc(
           0, chunk_size);
-      Kokkos::parallel_for("CalcNbhDers", policy_nbh_calc, *this);
+      Kokkos::parallel_for("ComputeNbhDers", policy_nbh_calc, *this);
     }
 
     // ========== Compute force (and convolve alphas to get energy if needed) ==========
@@ -400,6 +401,25 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 }
 
 // ========== Kernels ==========
+
+// Inits the working arrays: jacobian and moment vals to 0. (ders not needed.
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers,
+                                                                  const int &ii, const int &k) const
+{
+  d_moment_tensor_vals(ii, k) = 0;
+  d_nbh_energy_ders_wrt_moments(ii, k) = 0;
+}
+
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void
+PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitMomentJac, const int &ii, const int &jj) const
+{
+  // Since there are max_neigh * chunk_size tasks.
+  // We need to tune to see whether to modify this to put this loop in the kernel
+  for (int k = 0; k < alpha_index_basic_count; k++)
+    for (int a = 0; a < 3; a++) d_moment_jacobian(ii, jj, k, a) = 0;
+}
 
 // Calculates the basic alphas
 template <class DeviceType>
@@ -549,16 +569,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
   }
 }
 
-// Initializes the nbh energy ders as the linear coeffs
-// There might be efficiency improvement by combining this kernel with the next step? Look into this.
-template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitNbhDers,
-                                                                  const int &ii) const
-{
-  for (int k = 0; k < alpha_scalar_count; k++)
-    d_nbh_energy_ders_wrt_moments(ii, k) = linear_coeffs[k];
-}
-
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeNbhDers,
                                                                   const int &ii) const
@@ -576,6 +586,14 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
     d_nbh_energy_ders_wrt_moments(ii, a1) += val3 * multipiler * val0;
     d_nbh_energy_ders_wrt_moments(ii, a0) += val3 * multipiler * val1;
   }
+}
+
+// Sets the nbh energy ders as the linear coeffs
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPSetScalarNbhDers,
+                                                                  const int &ii, const int &k) const
+{
+  d_nbh_energy_ders_wrt_moments(ii, k) = linear_coeffs[k];
 }
 
 template <class DeviceType>

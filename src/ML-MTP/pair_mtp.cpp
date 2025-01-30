@@ -192,13 +192,15 @@ void PairMTP::compute(int eflag, int vflag)
     }
 
     // ------------ Convolve Basis Set From Alpha Map ------------
-    nbh_energy = species_coeffs[itype];    // Essentially the reference point energy per species
-    for (int k = 0; k < alpha_scalar_count; k++)
-      nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
+    if (eflag_atom || eflag_global) {        // This could be replaced with eflag_either
+      nbh_energy = species_coeffs[itype];    // Essentially the reference point energy per species
+      for (int k = 0; k < alpha_scalar_count; k++)
+        nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
 
-    // Tally energies per flags
-    if (eflag_atom) eatom[i] = nbh_energy;
-    if (eflag_global) eng_vdwl += nbh_energy;
+      // Tally energies per flags
+      if (eflag_atom) eatom[i] = nbh_energy;
+      if (eflag_global) eng_vdwl += nbh_energy;
+    }
 
     // =========== Begin Backpropogation ===========
 

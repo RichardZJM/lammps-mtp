@@ -33,10 +33,12 @@ PairStyle(mtp/kk/host,PairMTPKokkos<LMPHostType>);
 
 namespace LAMMPS_NS {
 
-// Structs for kernels go here
+// Structs for kernels
+struct TagPairMTPInitMomentValsDers {};
+struct TagPairMTPInitMomentJac {};
 struct TagPairMTPComputeAlphaBasic {};
 struct TagPairMTPComputeAlphaTimes {};
-struct TagPairMTPInitNbhDers {};
+struct TagPairMTPSetScalarNbhDers {};
 struct TagPairMTPComputeNbhDers {};
 template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
@@ -69,7 +71,16 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
                                           const F_FLOAT &delx, const F_FLOAT &dely,
                                           const F_FLOAT &delz) const;
 
-  // MTP routines
+  // ---------- MTP routines (inorder of execution) ----------
+
+  //Kernels for initing working views
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPInitMomentValsDers, const int &ii, const int &k) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPInitMomentJac, const int &ii, const int &k) const;
+
+  // Kernels for computation
   KOKKOS_INLINE_FUNCTION
   void
   operator()(TagPairMTPComputeAlphaBasic,
@@ -80,7 +91,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   void operator()(TagPairMTPComputeAlphaTimes, const int &ii) const;
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPInitNbhDers, const int &ii) const;
+  void operator()(TagPairMTPSetScalarNbhDers, const int &ii, const int &k) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPComputeNbhDers, const int &ii) const;
@@ -91,8 +102,9 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
              const int &ii) const;    // This eventually calls the below version
 
   template <int NEIGHFLAG, int EVFLAG>
-  KOKKOS_INLINE_FUNCTION void operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
-                                         EV_FLOAT &) const;    // With global energy reduction
+  KOKKOS_INLINE_FUNCTION void
+  operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
+             EV_FLOAT &) const;    // With global energy reduction as needed
 
  protected:
   int chunk_size,
