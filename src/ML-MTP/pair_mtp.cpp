@@ -100,9 +100,6 @@ void PairMTP::compute(int eflag, int vflag)
 
     memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
                  "moment_jacobian");    // Resize the working jacobian
-    std::fill(&moment_jacobian[0][0][0],
-              &moment_jacobian[0][0][0] + 3 * jnum * alpha_index_basic_count,
-              0.0);    //Fill jacobian with 0
     std::fill(&moment_tensor_vals[0], &moment_tensor_vals[0] + alpha_moment_count,
               0.0);    //Fill moments with 0
     std::fill(&nbh_energy_ders_wrt_moments[0], &nbh_energy_ders_wrt_moments[0] + alpha_moment_count,
@@ -164,10 +161,10 @@ void PairMTP::compute(int eflag, int vflag)
 
         // Get the component's derivatives too
         pow *= der / dist;
-        moment_jacobian[k][jj][0] += pow * r[0];
-        moment_jacobian[k][jj][1] += pow * r[1];
-        moment_jacobian[k][jj][2] += pow * r[2];
-        // Maybe eliminate the if else statments in GPU version?
+        moment_jacobian[k][jj][0] = pow * r[0];
+        moment_jacobian[k][jj][1] = pow * r[1];
+        moment_jacobian[k][jj][2] = pow * r[2];
+
         if (alpha_index_basic[k][1] != 0) {
           moment_jacobian[k][jj][0] += val * alpha_index_basic[k][1] *
               coord_powers[alpha_index_basic[k][1] - 1][0] * pow1 * pow2;

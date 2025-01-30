@@ -136,8 +136,8 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
   MemKK::realloc_kokkos(d_linear_coeffs, "mtp/kk:linear_coeffs", alpha_scalar_count);
 
   //Setup the working arrays. It might be preferable for these to be scatter view
-  MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", chunk_size,
-                        alpha_index_basic_count, 100,
+  MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", chunk_size, 2,
+                        alpha_index_basic_count,
                         3);    // Arbitrary initial value (to be reallocated with max neighs)
   MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk:moment_tensor_vals", chunk_size,
                         alpha_moment_count);
@@ -255,7 +255,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
   //Precalc the max neighs. This is needed to resize the jacobian.
   max_neighs = 0;
-  Kokkos::parallel_reduce("PairSNAPKokkos::find_max_neighs", inum,
+  Kokkos::parallel_reduce("PairMTPKokkos::find_max_neighs", inum,
                           FindMaxNumNeighs<DeviceType>(k_list), Kokkos::Max<int>(max_neighs));
 
   // Handling batching
@@ -270,9 +270,9 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   if (!host_flag) team_size_default = 32;
 
   // Resize the jacobian if the max_neighs isn't large enough. Do not initalize, we do so in the loop.
-  if ((int) d_moment_jacobian.extent(0) < max_neighs)
-    Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size,
-                    alpha_index_basic_count, max_neighs, 3);
+  if ((int) d_moment_jacobian.extent(1) < max_neighs)
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size, max_neighs,
+                    alpha_index_basic_count, 3);
 
   EV_FLOAT ev;
 
@@ -288,9 +288,9 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
             policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
         Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
 
-        typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentJac>
-            policy_jac_init({0, 0}, {chunk_size, alpha_moment_count});
-        Kokkos::parallel_for("InitMomentJac", policy_jac_init, *this);
+        // typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentJac>
+        //     policy_jac_init({0, 0}, {chunk_size, max_neighs});
+        // Kokkos::parallel_for("InitMomentJac", policy_jac_init, *this);
       }
     }
 
@@ -303,8 +303,8 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       int dist_coords_scratch_count = 4 * max_alpha_index_basic;
       int scratch_size = scratch_size_helper<F_FLOAT>(
           team_size * (radial_scratch_count + dist_coords_scratch_count));
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(
-          chunk_size, team_size, vector_length);
+      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
+                                                                                     team_size);
       policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
       Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
     }
@@ -429,7 +429,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     const
 {
   // Extract the atom number
-  int ii = team.team_rank() + team.league_rank() * team.team_size();
+  int ii = team.league_rank();
   if (ii >= chunk_size) return;
 
   // Get information about the central atom
@@ -452,7 +452,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
     const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-    if (rsq < max_cutoff_sq) return;
+    if (rsq > max_cutoff_sq) return;
 
     const F_FLOAT dist = sqrt(rsq);
 
@@ -522,30 +522,21 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       F_FLOAT pow1 = s_coord_powers(jj, a1, 1);
       F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
-      d_moment_tensor_vals(ii, k) += val * pow;
+      Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
 
       // Get the component's derivatives too
       pow *= der / dist;
-      d_moment_jacobian(ii, k, jj, 0) += pow * r[0];
-      d_moment_jacobian(ii, k, jj, 1) += pow * r[1];
-      d_moment_jacobian(ii, k, jj, 2) += pow * r[2];
+      d_moment_jacobian(ii, jj, k, 0) = pow * r[0];
+      d_moment_jacobian(ii, jj, k, 1) = pow * r[1];
+      d_moment_jacobian(ii, jj, k, 2) = pow * r[2];
+      // Note sure if this is already optimized but we might benefit from caching the jacobian for the below step to avoid calls.
 
-      // I've removed branch divergence here but maybe an if statement approach is better here, depending on contention.
-      Kokkos::atomic_add(&d_moment_jacobian(ii, k, jj, 0),
-                         val * a0 * s_coord_powers(jj, Kokkos::max(a0 - 1, 1), 0) * pow1 * pow2);
-      Kokkos::atomic_add(&d_moment_jacobian(ii, k, jj, 1),
-                         val * a1 * pow0 * s_coord_powers(jj, Kokkos::max(a1 - 1, 1), 1) * pow2);
-      Kokkos::atomic_add(&d_moment_jacobian(ii, k, jj, 2),
-                         val * a2 * pow0 * pow1 * s_coord_powers(jj, Kokkos::max(a2 - 1, 1), 2));
-
-      // TODO: Try using the following too if applicable where
-      // There is no contention for team size of 32 and MTP lvl >= 12,
-      // d_moment_jacobian(ii, k, jj, 0) +=
-      //     val * a0 * s_coord_powers(jj, Kokkos::max(a0 - 1, 1), 0) * pow1 * pow2;
-      // d_moment_jacobian(ii, k, jj, 1) +=
-      //     val * a1 * pow0 * s_coord_powers(jj, Kokkos::max(a1 - 1, 1), 1) * pow2;
-      // d_moment_jacobian(ii, k, jj, 2) +=
-      //     val * a2 * pow0 * pow1 * s_coord_powers(jj, Kokkos::max(a2 - 1, 1), 2);
+      if (a0 != 0)
+        d_moment_jacobian(ii, jj, k, 0) += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
+      if (a1 != 0)
+        d_moment_jacobian(ii, jj, k, 1) += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
+      if (a2 != 0)
+        d_moment_jacobian(ii, jj, k, 2) += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
     }
   });
 }
@@ -569,6 +560,14 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
   }
 }
 
+// Sets the nbh energy ders as the linear coeffs
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPSetScalarNbhDers,
+                                                                  const int &ii, const int &k) const
+{
+  d_nbh_energy_ders_wrt_moments(ii, d_alpha_moment_mapping(k)) = d_linear_coeffs(k);
+}
+
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeNbhDers,
                                                                   const int &ii) const
@@ -586,14 +585,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
     d_nbh_energy_ders_wrt_moments(ii, a1) += val3 * multipiler * val0;
     d_nbh_energy_ders_wrt_moments(ii, a0) += val3 * multipiler * val1;
   }
-}
-
-// Sets the nbh energy ders as the linear coeffs
-template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPSetScalarNbhDers,
-                                                                  const int &ii, const int &k) const
-{
-  d_nbh_energy_ders_wrt_moments(ii, k) = linear_coeffs[k];
 }
 
 template <class DeviceType>
@@ -615,13 +606,17 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
   const int jnum = d_numneigh(i);
 
   for (int jj = 0; jj < jnum; jj++) {
-    int j = d_neighbors(i, jj);
-    j &= NEIGHMASK;
+    const int j = d_neighbors(i, jj) & NEIGHMASK;
+
+    F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
+    const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+    if (rsq > max_cutoff_sq) continue;
+
     F_FLOAT temp_force[3] = {0, 0, 0};
     for (int k = 0; k < alpha_index_basic_count; k++)
       for (int a = 0; a < 3; a++) {
         //Calculate forces
-        temp_force[a] += d_nbh_energy_ders_wrt_moments(ii, k) * d_moment_jacobian(ii, k, jj, a);
+        temp_force[a] += d_nbh_energy_ders_wrt_moments(ii, k) * d_moment_jacobian(ii, jj, k, a);
       }
 
     a_f(i, 0) += temp_force[0];
@@ -633,19 +628,17 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
     a_f(j, 2) -= temp_force[2];
 
     if (EVFLAG && eflag_either) {
-      F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
       v_tally_xyz<NEIGHFLAG>(ev, i, j, temp_force[0], temp_force[1], temp_force[2], r[0], r[1],
                              r[2]);
     }
   }
 
   if (EVFLAG && eflag_either) {
-    const int i = d_ilist[ii + chunk_offset];    // Get atom id
-    const int itype = type[i] - 1;               // switch to zero indexing for type
+
     F_FLOAT nbh_energy =
         d_species_coeffs[itype];    // Essentially the reference point energy per species
 
-    // Take the linear combination of the basis set and the learned coefficients. This could probably be a reductions but if threads are  saturated, there should be little difference.
+    // Take the linear combination of the basis set and the learned coefficients. This might benefit from using a reduction?
     for (int k = 0; k < alpha_scalar_count; k++) {
       int basis_member_index = d_alpha_moment_mapping(k);
       nbh_energy += d_linear_coeffs(k) * d_moment_tensor_vals(ii, basis_member_index);
