@@ -283,15 +283,14 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
     // ========== Init working view as 0  ==========
     {
-      {
-        typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
-            policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
-        Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
 
-        // typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentJac>
-        //     policy_jac_init({0, 0}, {chunk_size, max_neighs});
-        // Kokkos::parallel_for("InitMomentJac", policy_jac_init, *this);
-      }
+      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
+          policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
+      Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
+
+      // typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentJac>
+      //     policy_jac_init({0, 0}, {chunk_size, max_neighs});
+      // Kokkos::parallel_for("InitMomentJac", policy_jac_init, *this);
     }
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
@@ -580,7 +579,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
 
     F_FLOAT val0 = d_moment_tensor_vals(ii, a0);
     F_FLOAT val1 = d_moment_tensor_vals(ii, a1);
-    F_FLOAT val3 = d_moment_tensor_vals(ii, a3);
+    F_FLOAT val3 = d_nbh_energy_ders_wrt_moments(ii, a3);
 
     d_nbh_energy_ders_wrt_moments(ii, a1) += val3 * multipiler * val0;
     d_nbh_energy_ders_wrt_moments(ii, a0) += val3 * multipiler * val1;
@@ -613,11 +612,12 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
     if (rsq > max_cutoff_sq) continue;
 
     F_FLOAT temp_force[3] = {0, 0, 0};
-    for (int k = 0; k < alpha_index_basic_count; k++)
+    for (int k = 0; k < alpha_index_basic_count; k++) {
       for (int a = 0; a < 3; a++) {
         //Calculate forces
         temp_force[a] += d_nbh_energy_ders_wrt_moments(ii, k) * d_moment_jacobian(ii, jj, k, a);
       }
+    }
 
     a_f(i, 0) += temp_force[0];
     a_f(i, 1) += temp_force[1];
