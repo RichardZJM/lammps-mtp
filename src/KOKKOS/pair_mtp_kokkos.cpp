@@ -281,16 +281,12 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     EV_FLOAT ev_tmp;
     if (chunk_size > inum - chunk_offset) chunk_size = inum - chunk_offset;
 
-    // ========== Init working view as 0  ==========
+    // ========== Init working views as 0  ==========
     {
 
       typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
           policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
       Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
-
-      // typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentJac>
-      //     policy_jac_init({0, 0}, {chunk_size, max_neighs});
-      // Kokkos::parallel_for("InitMomentJac", policy_jac_init, *this);
     }
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========

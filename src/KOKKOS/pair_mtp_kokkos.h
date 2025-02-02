@@ -35,7 +35,6 @@ namespace LAMMPS_NS {
 
 // Structs for kernels
 struct TagPairMTPInitMomentValsDers {};
-struct TagPairMTPInitMomentJac {};
 struct TagPairMTPComputeAlphaBasic {};
 struct TagPairMTPComputeAlphaTimes {};
 struct TagPairMTPSetScalarNbhDers {};
@@ -76,9 +75,6 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   //Kernels for initing working views
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPInitMomentValsDers, const int &ii, const int &k) const;
-
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPInitMomentJac, const int &ii, const int &k) const;
 
   // Kernels for computation
   KOKKOS_INLINE_FUNCTION
