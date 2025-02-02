@@ -406,16 +406,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInit
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
 }
 
-template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void
-PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitMomentJac, const int &ii, const int &jj) const
-{
-  // Since there are max_neigh * chunk_size tasks.
-  // We need to tune to see whether to modify this to put this loop in the kernel
-  for (int k = 0; k < alpha_index_basic_count; k++)
-    for (int a = 0; a < 3; a++) d_moment_jacobian(ii, jj, k, a) = 0;
-}
-
 // Calculates the basic alphas
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
