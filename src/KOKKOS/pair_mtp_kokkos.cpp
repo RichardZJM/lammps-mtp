@@ -451,7 +451,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     }
 
     // ---------- Calculate the radial basis functions ----------
-    // Currently, I just have it hard coded for Rb_Chebyshev. I need to implement a way to handle different radial basis sets in kokkos
+    // Currently, I just have it hard coded for Rb_Chebyshev. I'll need to implement a way to handle different radial basis sets in kokkos
 
     // Calculate the radial basis and store in shared memory
     F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
@@ -476,10 +476,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     }
 
     //Now, we loop through all the basic alphas
-    // To reduce contention we are going to offset the starting index
-    // int startIndex = jj % alpha_index_basic_count;
     for (int k = 0; k < alpha_index_basic_count; k++) {
-      // int k = kk % alpha_index_basic_count;
+
       F_FLOAT val = 0;
       F_FLOAT der = 0;
       int mu = d_alpha_index_basic(k, 0);
@@ -524,6 +522,21 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
       d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
       d_moment_jacobian(ii, jj, k, 2) = temp_jac[2];
+
+      // This version uses 2 less registers but runs slightly slower
+      // pow *= der / dist;
+
+      // F_FLOAT temp_jac = pow * r[0];
+      // if (a0 != 0) temp_jac += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
+      // d_moment_jacobian(ii, jj, k, 0) = temp_jac;
+
+      // temp_jac = pow * r[1];
+      // if (a1 != 0) temp_jac += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
+      // d_moment_jacobian(ii, jj, k, 1) = temp_jac;
+
+      // temp_jac = pow * r[2];
+      // if (a2 != 0) temp_jac += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+      // d_moment_jacobian(ii, jj, k, 2) = temp_jac;
     }
   });
 }
