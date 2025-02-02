@@ -267,7 +267,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   // Maybe need 64 for AMD?
   int team_size_default = 1;
   int vector_length_default = 1;
-  if (!host_flag) team_size_default = 32;
+  if (!host_flag) team_size_default = 64;
 
   // Resize the jacobian if the max_neighs isn't large enough. Do not initalize, we do so in the loop.
   if ((int) d_moment_jacobian.extent(1) < max_neighs)
@@ -477,9 +477,9 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
 
     //Now, we loop through all the basic alphas
     // To reduce contention we are going to offset the starting index
-    int startIndex = jj % alpha_index_basic_count;
-    for (int kk = startIndex; kk < startIndex + alpha_index_basic_count; kk++) {
-      int k = kk % alpha_index_basic_count;
+    // int startIndex = jj % alpha_index_basic_count;
+    for (int k = 0; k < alpha_index_basic_count; k++) {
+      // int k = kk % alpha_index_basic_count;
       F_FLOAT val = 0;
       F_FLOAT der = 0;
       int mu = d_alpha_index_basic(k, 0);
@@ -510,18 +510,20 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
 
       // Get the component's derivatives too
-      pow *= der / dist;
-      d_moment_jacobian(ii, jj, k, 0) = pow * r[0];
-      d_moment_jacobian(ii, jj, k, 1) = pow * r[1];
-      d_moment_jacobian(ii, jj, k, 2) = pow * r[2];
-      // Note sure if this is already optimized but we might benefit from caching the jacobian for the below step to avoid calls.
+      F_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
 
-      if (a0 != 0)
-        d_moment_jacobian(ii, jj, k, 0) += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      if (a1 != 0)
-        d_moment_jacobian(ii, jj, k, 1) += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      if (a2 != 0)
-        d_moment_jacobian(ii, jj, k, 2) += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+      pow *= der / dist;
+      temp_jac[0] = pow * r[0];
+      temp_jac[1] = pow * r[1];
+      temp_jac[2] = pow * r[2];
+
+      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
+      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
+      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+
+      d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
+      d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
+      d_moment_jacobian(ii, jj, k, 2) = temp_jac[2];
     }
   });
 }
