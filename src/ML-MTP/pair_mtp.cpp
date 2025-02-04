@@ -580,8 +580,6 @@ Might be able to replace that section with next_values which is in both TFR and 
   if (comm->me != 0) {
     //First we reconstruct the radial basis set
     if (radial_basis_type_index == 1) {
-      utils::logmesg(lmp, "\n\nProc {} RIndex = {}, rsize = {}, \n\n", comm->me,
-                     radial_basis_type_index, radial_basis_size);
       radial_basis = new RBChebyshev(radial_basis_size, lmp);
       radial_basis->scaling = scaling;
     }

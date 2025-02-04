@@ -72,3 +72,4 @@ lib/kokkos/Makefile.kokkos
 src/KOKKOS/Install.sh
 test.commands
 testMTP/*
+performanceMTP/*
