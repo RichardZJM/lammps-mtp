@@ -136,13 +136,12 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
   MemKK::realloc_kokkos(d_linear_coeffs, "mtp/kk:linear_coeffs", alpha_scalar_count);
 
   //Setup the working arrays. It might be preferable for these to be scatter view
-  MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", chunk_size, 2,
-                        alpha_index_basic_count,
+  // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum. We will resize these as needed in compute.
+  MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", 1, 1, alpha_index_basic_count,
                         3);    // Arbitrary initial value (to be reallocated with max neighs)
-  MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk:moment_tensor_vals", chunk_size,
+  MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk:moment_tensor_vals", 1, alpha_moment_count);
+  MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments, "mtp/kk:nbh_energy_ders_wrt_moments", 1,
                         alpha_moment_count);
-  MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments, "mtp/kk:nbh_energy_ders_wrt_moments",
-                        chunk_size, alpha_moment_count);
 
   //Declare host arrays
   auto h_alpha_index_basic = Kokkos::create_mirror_view(d_alpha_index_basic);
@@ -269,8 +268,16 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   int vector_length_default = 1;
   if (!host_flag) team_size_default = 64;
 
-  // Resize the jacobian if the max_neighs isn't large enough. Do not initalize, we do so in the loop.
-  if ((int) d_moment_jacobian.extent(1) < max_neighs)
+  // Resize the arrays tot eh chunksize if needed. Do not initalize, we do so in the loop.
+  if ((int) d_moment_tensor_vals.extent(0) < chunk_size) {
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_tensor_vals, chunk_size,
+                    alpha_moment_count);
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_energy_ders_wrt_moments, chunk_size,
+                    alpha_moment_count);
+  }
+  // Resize the jacobian if the max_neighs isn't large enough. Do not initalize; first access is write.
+  if ((int) d_moment_jacobian.extent(0) < chunk_size ||
+      (int) d_moment_jacobian.extent(1) < max_neighs)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size, max_neighs,
                     alpha_index_basic_count, 3);
 
@@ -292,7 +299,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
       int team_size = team_size_default;
-      if (max_neighs < team_size) team_size = 32;
+      if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
       check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size, team_size, vector_length);
       int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
