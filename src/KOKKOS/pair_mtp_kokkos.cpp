@@ -292,6 +292,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
       int team_size = team_size_default;
+      if (max_neighs < team_size) team_size = 32;
       int vector_length = vector_length_default;
       check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size, team_size, vector_length);
       int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative

@@ -268,9 +268,10 @@ void PairMTP::compute(int eflag, int vflag)
 
 void PairMTP::settings(int narg, char **arg)
 {
-  if (narg != 1)
+  if (narg != 1 && comm->me == 0)
     utils::logmesg(
-        lmp, "Pair MTP only accepts 1 argument, the MTP potential file. Ignoring other arguments!");
+        lmp,
+        "Pair MTP only accepts 1 argument, the MTP potential file. Ignoring other arguments!\n");
   read_file(arg[0]);
 }
 

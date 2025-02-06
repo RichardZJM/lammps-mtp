@@ -69,7 +69,6 @@ src/mtp_rb_chevbyshev_basis.cpp
 src/pair_mtp.cpp
 lib/kokkos/Makefile.kokkos
 */Makefile.kokkos_cuda_mpi
-src/KOKKOS/Install.sh
 test.commands
 testMTP/*
 performanceMTP/*
