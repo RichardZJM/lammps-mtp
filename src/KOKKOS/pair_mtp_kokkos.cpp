@@ -473,8 +473,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(jj, 0) =
-        scaling * (0 * (dist - max_cutoff) * (dist - max_cutoff) + 2 * (dist - max_cutoff));
+    s_radial_basis_ders(jj, 0) = scaling * 2 * (dist - max_cutoff);
     s_radial_basis_ders(jj, 1) = scaling *
         (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {

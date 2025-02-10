@@ -68,6 +68,7 @@ class PairMTP : public Pair {
   int *alpha_moment_mapping;    // Selects the basis values from completed moments
 
   //Working buffers
+  int jac_size = 0;         // Size of the jacobian (jnum dim)
   double *dist_powers;      // Buffer used for powers of dist (eg. d^i)
   double **coord_powers;    // Buffer used for powers of rel. pos. (eg. [dx^i, dy^i, dz^i])
   double ***moment_jacobian = nullptr;    // First created during compute using grow

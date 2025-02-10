@@ -98,8 +98,11 @@ void PairMTP::compute(int eflag, int vflag)
     const double xi[3] = {x[i][0], x[i][1],
                           x[i][2]};    // Cache the position of the central atom for efficiency
 
-    memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
-                 "moment_jacobian");    // Resize the working jacobian
+    if (jac_size < jnum) {
+      memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
+                   "moment_jacobian");    // Resize the working jacobian.
+      jac_size = jnum;
+    }
     std::fill(&moment_tensor_vals[0], &moment_tensor_vals[0] + alpha_moment_count,
               0.0);    //Fill moments with 0
     std::fill(&nbh_energy_ders_wrt_moments[0], &nbh_energy_ders_wrt_moments[0] + alpha_moment_count,
@@ -120,7 +123,6 @@ void PairMTP::compute(int eflag, int vflag)
       const double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
       if (dist_sq > cutsq[itype + 1][jtype + 1]) continue;    //1 indexing
-      // Not sure if this cutoff check is need but it is used in the LAMMPS docs; rcutmax could also be used instead.
 
       const double dist = std::sqrt(dist_sq);
       radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
@@ -207,20 +209,28 @@ void PairMTP::compute(int eflag, int vflag)
 
     //------------ Step 2: Propogate chain rule through the alpha times to the alpha basics ------------
     for (int k = alpha_index_times_count - 1; k >= 0; k--) {
-      double val0 = moment_tensor_vals[alpha_index_times[k][0]];
-      double val1 = moment_tensor_vals[alpha_index_times[k][1]];
-      int val2 = alpha_index_times[k][2];
+      int a0 = alpha_index_times[k][0];
+      int a1 = alpha_index_times[k][1];
+      int multipiler = alpha_index_times[k][2];
+      int a3 = alpha_index_times[k][3];
 
-      nbh_energy_ders_wrt_moments[alpha_index_times[k][1]] +=
-          nbh_energy_ders_wrt_moments[alpha_index_times[k][3]] * val2 * val0;
-      nbh_energy_ders_wrt_moments[alpha_index_times[k][0]] +=
-          nbh_energy_ders_wrt_moments[alpha_index_times[k][3]] * val2 * val1;
+      double val0 = moment_tensor_vals[a0];
+      double val1 = moment_tensor_vals[a1];
+      double val3 = nbh_energy_ders_wrt_moments[a3];
+
+      nbh_energy_ders_wrt_moments[a1] += val3 * multipiler * val0;
+      nbh_energy_ders_wrt_moments[a0] += val3 * multipiler * val1;
     }
 
     //------------ Step 3: Multiply energy ders wrt moment by the Jacobian to get forces ------------
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];
       j &= NEIGHMASK;
+
+      double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
+      double rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+      if (rsq > max_cutoff_sq) continue;
+
       double temp_force[3] = {0, 0, 0};
       for (int k = 0; k < alpha_index_basic_count; k++)
         for (int a = 0; a < 3; a++) {
@@ -238,8 +248,6 @@ void PairMTP::compute(int eflag, int vflag)
 
       //Calculate virial stress
       if (vflag) {
-        double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
-
         virial[0] -= temp_force[0] * r[0] * 2;    //xx
         virial[1] -= temp_force[1] * r[1] * 2;    //yy
         virial[2] -= temp_force[2] * r[2] * 2;    //zz

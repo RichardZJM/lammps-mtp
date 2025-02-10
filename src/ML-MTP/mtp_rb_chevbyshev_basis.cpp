@@ -45,8 +45,7 @@ void RBChebyshev::calc_radial_basis_ders(double dist)
   double mult = 2.0 / (max_cutoff - min_cutoff);
   double ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
-  radial_basis_ders[0] =
-      scaling * (0 * (dist - max_cutoff) * (dist - max_cutoff) + 2 * (dist - max_cutoff));
+  radial_basis_ders[0] = scaling * 2 * (dist - max_cutoff);
   radial_basis_ders[1] =
       scaling * (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
   for (int i = 2; i < size; i++) {
