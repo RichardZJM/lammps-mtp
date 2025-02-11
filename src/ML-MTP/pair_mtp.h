@@ -40,7 +40,7 @@ class PairMTP : public Pair {
   double init_one(int, int) override;      // Checks that species are inited
 
  protected:
-  void read_file(char *);                     //Parsing file using LAMMPS conventions
+  void read_file(FILE *);                     //Parsing file using LAMMPS utils
   std::string potential_name = "Untitled";    //An optional name which isn't currently used.
   std::string potential_tag = "";    //An optional tag/description which isn't currently used.
 

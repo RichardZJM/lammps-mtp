@@ -29,7 +29,6 @@
 #include "neighbor.h"
 
 #include <cmath>
-#include <csignal>
 
 using namespace LAMMPS_NS;
 
@@ -280,7 +279,8 @@ void PairMTP::settings(int narg, char **arg)
     utils::logmesg(
         lmp,
         "Pair MTP only accepts 1 argument, the MTP potential file. Ignoring other arguments!\n");
-  read_file(arg[0]);
+  FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
+  read_file(mtp_file);
 }
 
 /* ----------------------------------------------------------------------
@@ -317,9 +317,9 @@ double PairMTP::init_one(int i, int j)
 }
 
 /* ----------------------------------------------------------------------
-   MTP file parsing helper function. Includes  memory allocation. Excludes some radial basis hyperparameters (in radial basis constructor instead).
+   MTP file parsing helper function. Includes memory allocation. Excludes some radial basis hyperparameters (in radial basis constructor instead).
 ------------------------------------------------------------------------- */
-void PairMTP::read_file(char *mtp_file_name)
+void PairMTP::read_file(FILE *mtp_file)
 {
   /*NOTE: TextFileReader is used in lieu of PotentialFileReader to ensure compatability 
 with the MLIP-3 package. The alpha indicies in this format are all in one line, requiring
@@ -330,7 +330,6 @@ Might be able to replace that section with next_values which is in both TFR and 
 
   //Open the MTP file on proc 0
   if (comm->me == 0) {
-    FILE *mtp_file = utils::open_potential(mtp_file_name, lmp, nullptr);
     TextFileReader tfr(mtp_file, "ml-mtp");
     tfr.ignore_comments = true;
     std::string new_separators = "=, ";
@@ -553,7 +552,6 @@ Might be able to replace that section with next_values which is in both TFR and 
     memory->create(species_coeffs, species_count, "species_coeffs");
     for (int i = 0; i < species_count; i++) { species_coeffs[i] = line_tokens.next_double(); }
 
-    //test
     //Read the linear MTP basis coefficients
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
