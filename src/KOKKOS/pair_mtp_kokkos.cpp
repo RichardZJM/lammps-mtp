@@ -608,7 +608,6 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
   auto a_f = v_f.template access<AtomicDup_v<NEIGHFLAG, DeviceType>>();
 
   const int i = d_ilist[ii + chunk_offset];
-  const int itype = type(i) - 1;    // zero indexing
   const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
   const int jnum = d_numneigh(i);
 
@@ -642,7 +641,7 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
   }
 
   if (EVFLAG && eflag_either) {
-
+    const int itype = type(i) - 1;    // zero indexing
     F_FLOAT nbh_energy =
         d_species_coeffs[itype];    // Essentially the reference point energy per species
 
