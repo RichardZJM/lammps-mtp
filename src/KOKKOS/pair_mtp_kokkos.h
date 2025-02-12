@@ -39,7 +39,8 @@ struct TagPairMTPComputeAlphaBasic {};
 struct TagPairMTPComputeAlphaTimes {};
 struct TagPairMTPSetScalarNbhDers {};
 struct TagPairMTPComputeNbhDers {};
-template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
+template <int NEIGHFLAG, int VFLAG> struct TagPairMTPComputeForce {};
+struct TagPairMTPComputeEnergy {};
 
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
@@ -65,10 +66,9 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   int scratch_size_helper(int values_per_team);    // Helps calcs scratch size for calcalphabasic
 
   template <int NEIGHFLAG>
-  KOKKOS_INLINE_FUNCTION void v_tally_xyz(EV_FLOAT &ev, const int &i, const int &j,
-                                          const F_FLOAT &fx, const F_FLOAT &fy, const F_FLOAT &fz,
-                                          const F_FLOAT &delx, const F_FLOAT &dely,
-                                          const F_FLOAT &delz) const;
+  KOKKOS_INLINE_FUNCTION void v_tally_xyz(const int &i, const int &j, const F_FLOAT &fx,
+                                          const F_FLOAT &fy, const F_FLOAT &fz, const F_FLOAT &delx,
+                                          const F_FLOAT &dely, const F_FLOAT &delz) const;
 
   // ---------- MTP routines (inorder of execution) ----------
 
@@ -92,15 +92,14 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPComputeNbhDers, const int &ii) const;
 
-  template <int NEIGHFLAG, int EVFLAG>
+  template <int NEIGHFLAG, int VFLAG>
   KOKKOS_INLINE_FUNCTION void
-  operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
-             const int &ii) const;    // This eventually calls the below version
+  operator()(TagPairMTPComputeForce<NEIGHFLAG, VFLAG>,
+             const typename Kokkos::TeamPolicy<
+                 DeviceType, TagPairMTPComputeForce<NEIGHFLAG, VFLAG>>::member_type &team) const;
 
-  template <int NEIGHFLAG, int EVFLAG>
-  KOKKOS_INLINE_FUNCTION void
-  operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
-             EV_FLOAT &) const;    // With global energy reduction as needed
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPComputeEnergy, const int &ii, EV_FLOAT &) const;
 
  protected:
   int chunk_size,
@@ -139,7 +138,6 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<double *, DeviceType> d_linear_coeffs;     // Basis coeffs
 
   // Global working buffers. These should probably be scatterviews but the current implementation simply uses atomics if needed.
-  Kokkos::View<double ****, DeviceType> d_moment_jacobian;
   Kokkos::View<double **, DeviceType> d_moment_tensor_vals;
   Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
 
