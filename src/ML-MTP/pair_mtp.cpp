@@ -58,6 +58,8 @@ PairMTP::~PairMTP()
     memory->destroy(alpha_moment_mapping);
     memory->destroy(moment_jacobian);
     memory->destroy(nbh_energy_ders_wrt_moments);
+    memory->destroy(within_cutoff);
+
     delete radial_basis;
     radial_basis = nullptr;
   }
@@ -99,7 +101,8 @@ void PairMTP::compute(int eflag, int vflag)
 
     if (jac_size < jnum) {
       memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
-                   "moment_jacobian");    // Resize the working jacobian.
+                   "moment_jacobian");                       // Resize the working jacobian.
+      memory->grow(within_cutoff, jnum, "within_cutoff");    // Resize within cuf
       jac_size = jnum;
     }
     std::fill(&moment_tensor_vals[0], &moment_tensor_vals[0] + alpha_moment_count,
@@ -118,12 +121,15 @@ void PairMTP::compute(int eflag, int vflag)
                    "Too few species count in the MTP potential!");    // Might not need this check
 
       const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
+      const double rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
-      const double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+      if (rsq > cutsq[itype + 1][jtype + 1]) {    //1 indexing
+        within_cutoff[jj] = false;
+        continue;
+      }
+      within_cutoff[jj] = true;
 
-      if (dist_sq > cutsq[itype + 1][jtype + 1]) continue;    //1 indexing
-
-      const double dist = std::sqrt(dist_sq);
+      const double dist = std::sqrt(rsq);
       radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
 
       // Precompute the coord and distance power
@@ -225,10 +231,7 @@ void PairMTP::compute(int eflag, int vflag)
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];
       j &= NEIGHMASK;
-
-      double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
-      double rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-      if (rsq > max_cutoff_sq) continue;
+      if (!within_cutoff[jj]) continue;
 
       double temp_force[3] = {0, 0, 0};
       for (int k = 0; k < alpha_index_basic_count; k++)
@@ -247,6 +250,8 @@ void PairMTP::compute(int eflag, int vflag)
 
       //Calculate virial stress
       if (vflag) {
+        // We only need to calculate rel pos again if stress are needed
+        const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
         virial[0] -= temp_force[0] * r[0] * 2;    //xx
         virial[1] -= temp_force[1] * r[1] * 2;    //yy
         virial[2] -= temp_force[2] * r[2] * 2;    //zz
@@ -605,7 +610,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     memory->create(coord_powers, max_alpha_index_basic, 3, "coord_powers");
     memory->create(moment_tensor_vals, alpha_moment_count, "moment_tensor_vals");
     memory->create(nbh_energy_ders_wrt_moments, alpha_moment_count, "nbh_energy_ders_wrt_moments");
-    //Jacobian will be first created with memory->grow during calculation.
+    //Jacobian and within_cutoff will be first created with memory->grow during calculation.
 
     //Coefficients
     memory->create(radial_basis_coeffs, radial_coeff_count, "radial_basis_coeffs");

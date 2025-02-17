@@ -138,7 +138,8 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
   //Setup the working arrays. It might be preferable for these to be scatter view
   // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum. We will resize these as needed in compute.
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", 1, 1, alpha_index_basic_count,
-                        3);    // Arbitrary initial value (to be reallocated with max neighs)
+                        3);
+  MemKK::realloc_kokkos(d_within_cutoff, "mtp/kk:within_cutoff", 1, 1);
   MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk:moment_tensor_vals", 1, alpha_moment_count);
   MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments, "mtp/kk:nbh_energy_ders_wrt_moments", 1,
                         alpha_moment_count);
@@ -268,18 +269,22 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   int vector_length_default = 1;
   if (!host_flag) team_size_default = 64;
 
-  // Resize the arrays tot eh chunksize if needed. Do not initalize, we do so in the loop.
+  // Resize the arrays to the chunksize if needed. Do not initialize values, we do so in the loop.
   if ((int) d_moment_tensor_vals.extent(0) < chunk_size) {
     Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_tensor_vals, chunk_size,
                     alpha_moment_count);
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_energy_ders_wrt_moments, chunk_size,
                     alpha_moment_count);
   }
-  // Resize the jacobian if the max_neighs isn't large enough. Do not initalize; first access is write.
+  // Resize the jacobian if max_neighs is too large. Do not initalize; first access is write.
   if ((int) d_moment_jacobian.extent(0) < chunk_size ||
       (int) d_moment_jacobian.extent(1) < max_neighs)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size, max_neighs,
                     alpha_index_basic_count, 3);
+
+  // Resize the d_within_cutoff if max_neighs is too large. Do not initalize; first access is write.
+  if ((int) d_within_cutoff.extent(0) < max_neighs)
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_within_cutoff, chunk_size, max_neighs);
 
   EV_FLOAT ev;
 
@@ -445,8 +450,11 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
     const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-    if (rsq > max_cutoff_sq) return;
 
+    const bool valid_pair = rsq < max_cutoff_sq;
+    d_within_cutoff(ii, jj) = valid_pair;
+
+    if (!valid_pair) return;
     const F_FLOAT dist = sqrt(rsq);
 
     s_dist_powers(jj, 0) = s_coord_powers(jj, 0, 0) = s_coord_powers(jj, 0, 1) =
@@ -608,16 +616,20 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
   auto a_f = v_f.template access<AtomicDup_v<NEIGHFLAG, DeviceType>>();
 
   const int i = d_ilist[ii + chunk_offset];
-  const int itype = type(i) - 1;    // zero indexing
-  const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
   const int jnum = d_numneigh(i);
+  bool need_energies = EVFLAG && eflag_either;
+
+  F_FLOAT xi[3];
+  if (need_energies) {
+    xi[0] = x(i, 0);
+    xi[1] = x(i, 1);
+    xi[2] = x(i, 2);
+  }
 
   for (int jj = 0; jj < jnum; jj++) {
     const int j = d_neighbors(i, jj) & NEIGHMASK;
 
-    F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
-    const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-    if (rsq > max_cutoff_sq) continue;
+    if (!d_within_cutoff(ii, jj)) continue;
 
     F_FLOAT temp_force[3] = {0, 0, 0};
     for (int k = 0; k < alpha_index_basic_count; k++) {
@@ -635,14 +647,15 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
     a_f(j, 1) -= temp_force[1];
     a_f(j, 2) -= temp_force[2];
 
-    if (EVFLAG && eflag_either) {
+    if (need_energies) {
+      F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
       v_tally_xyz<NEIGHFLAG>(ev, i, j, temp_force[0], temp_force[1], temp_force[2], r[0], r[1],
                              r[2]);
     }
   }
 
   if (EVFLAG && eflag_either) {
-
+    const int itype = type(i) - 1;    // zero indexing
     F_FLOAT nbh_energy =
         d_species_coeffs[itype];    // Essentially the reference point energy per species
 

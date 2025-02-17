@@ -67,13 +67,19 @@ class PairMTP : public Pair {
   int **alpha_index_times;      // Indicies to combine existing moments into knew ones
   int *alpha_moment_mapping;    // Selects the basis values from completed moments
 
-  //Working buffers
+  // Other working buffers
   int jac_size = 0;         // Size of the jacobian (jnum dim)
   double *dist_powers;      // Buffer used for powers of dist (eg. d^i)
   double **coord_powers;    // Buffer used for powers of rel. pos. (eg. [dx^i, dy^i, dz^i])
   double ***moment_jacobian = nullptr;    // First created during compute using grow
   double *moment_tensor_vals;             //Buffer to hold the moments
   double *nbh_energy_ders_wrt_moments;    // Same as above except for ders
+
+  // Cache whether to calculate forces based on cutoff as calculated in alpha basics
+  bool *within_cutoff = nullptr;    // First created during compute using grow
+
+  // We do not need to cache relative positions since they aren't needed after alpha basic
+  // unless we need to calculate stresss.
 };
 
 }    // namespace LAMMPS_NS
