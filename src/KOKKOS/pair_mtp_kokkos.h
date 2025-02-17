@@ -122,7 +122,6 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   typename AT::t_virial_array d_vatom;
 
   typename AT::t_x_array_randomread x;
-  // TODO: DOUBLE CHECK THE LAYOUTS!!!!
   typename AT::t_f_array f;
   typename AT::t_int_1d_randomread type;
 
@@ -138,10 +137,11 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<double *, DeviceType> d_species_coeffs;    // The species-based constants
   Kokkos::View<double *, DeviceType> d_linear_coeffs;     // Basis coeffs
 
-  // Global working buffers. These should probably be scatterviews but the current implementation simply uses atomics if needed.
+  // Global working buffers.
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;
   Kokkos::View<double **, DeviceType> d_moment_tensor_vals;
   Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
+  Kokkos::View<bool **, DeviceType> d_within_cutoff;
 
   // Typedefs for shared memory using templates
   typedef Kokkos::View<F_FLOAT **[3], typename DeviceType::scratch_memory_space,
