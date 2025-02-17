@@ -366,11 +366,15 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
         lmp->error->all(FLERR, "Error in reading MTP file, weight_scaling");
     }
 
+    utils::logmesg(lmp, "here\n\n\n");
+
     // Read the active set and its inverse
     // It is store as a binary file so we need to use sfreads
     int num_ele = coeff_count * coeff_count;
     utils::sfread(FLERR, active_set, sizeof(double), num_ele, mtp_file, nullptr, lmp->error);
     utils::sfread(FLERR, inverse_active_set, sizeof(double), num_ele, mtp_file, nullptr,
                   lmp->error);
+
+    utils::logmesg(lmp, "there\n\n\n");
   }
 }
