@@ -306,13 +306,49 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       }
     }
 
-    if (!pool_grades)
-      ;
+    if (!pool_grades) {
+      max_grade = 0;
+      double grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+      max_grade = std::max(grade, max_grade);
+      nbh_extrapolation_grades[ii] = grade;
+    }
   }
 
-  if (pool_grades)
-    ;
+  // MPI reduce operations based on selection mode
+  if (pool_grades) {    // Configuration mode
+    MPI_Allreduce(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE,
+                  MPI_SUM, world);
+    if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+  } else {    // Neighbourhood mode
+    MPI_Allreduce(&max_grade, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
+  }
+
+  if (comm->me == 0) {
+    if (max_grade >= select_threshold)
+      utils::logmesg(lmp, "Exceeded Selection Threshold. Current Value: {}\n", max_grade);
+    if (max_grade > break_threshold)
+      error->all(FLERR, "Exceeded Break Threshold. Current Value: {}. Terminating simulation.\n",
+                 max_grade);
+  }
 }
+
+/* ----------------------------------------------------------------------
+   Extrapolation Calculation Function
+------------------------------------------------------------------------- */
+double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vector)
+{
+  // This should  use BLAS if possible
+  double max_grade = 0;
+  for (int i = 0; i < coeff_count; i++) {
+    double current_grade = 0;
+    for (int j = 0; j < coeff_count; j++) {
+      current_grade += candidate_vector[j] * inverse_active_set[j][i];
+    }
+    max_grade = std::max(current_grade, max_grade);
+  }
+  return max_grade;
+}
+
 /* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */

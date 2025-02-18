@@ -36,7 +36,8 @@ class PairMTPExtrapolation : public PairMTP {
   void settings(int, char **) override;    // Reads args from "pair_style"
 
  protected:
-  void read_file(FILE *);    //Parsing file using LAMMPS utils
+  void read_file(FILE *);                            //Parsing file using LAMMPS utils
+  double calculate_extrapolation_grade(double *);    // Grades from candidate vector
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 
@@ -46,6 +47,7 @@ class PairMTPExtrapolation : public PairMTP {
   int steps_since_last_sample = 0;
   double select_threshold;    // Grade threshold for selection
   double break_threshold;     // Grade threshold for termination
+  double max_grade;           // Grade of current iteration
 
   // Active set
   double **active_set;            // Current active set
