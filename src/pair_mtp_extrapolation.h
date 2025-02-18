@@ -36,27 +36,31 @@ class PairMTPExtrapolation : public PairMTP {
   void settings(int, char **) override;    // Reads args from "pair_style"
 
  protected:
-  void read_file(FILE *);    //Parsing file using LAMMPS utils
+  void read_file(FILE *, char *);                    //Parsing file using LAMMPS utils
+  double calculate_extrapolation_grade(double *);    // Grades from candidate vector
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 
   bool untrained_potential = false;
   bool pool_grades;              // Is configuration mode?
   int sampling_frequency = 1;    // Sample frequency, default of 1
-  double select_threshold;       // Grade threshold for selection
-  double break_threshold;        // Grade threshold for termination
+  int steps_since_last_sample = 0;
+  double select_threshold;    // Grade threshold for selection
+  double break_threshold;     // Grade threshold for termination
+  double max_grade;           // Grade of current iteration
 
   // Active set
   double **active_set;            // Current active set
   double **inverse_active_set;    // Inverse of the current active set
 
   //Working buffers
-  double ***radial_jacobian;    // Jacobian of radial component wrt to basic moments
+  double ***radial_jacobian;    // Jacobian of radial component wrt to basic moment
   //   double *radial_basic_ders;            // Energy ders wrt to basic moments
   double *radial_moment_ders;        //Ders of non-elemnetary moments wrt to basis moments
   double *energy_ders_wrt_coeffs;    // Candidate information vector
 
   // Only needed for neigbhourhood mode
+  int nbh_count = 0;
   double *nbh_extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
 };
 

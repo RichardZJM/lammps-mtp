@@ -30,6 +30,7 @@
 
 #include <cmath>
 #include <csignal>
+#include <fstream>
 
 using namespace LAMMPS_NS;
 
@@ -40,11 +41,9 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
   if (allocated) {
     memory->destroy(active_set);
     memory->destroy(inverse_active_set);
-    // memory->destroy(nbh_extrapolation_grades);
-    // memory->destroy(radial_jacobian);
-    // memory->destroy(radial_basic_ders);
-    memory->destroy(radial_moment_ders);
+    memory->destroy(radial_jacobian);
     memory->destroy(energy_ders_wrt_coeffs);
+    if (!pool_grades) memory->destroy(nbh_extrapolation_grades);
   }
 }
 
@@ -54,6 +53,12 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
 
 void PairMTPExtrapolation::compute(int eflag, int vflag)
 {
+  // Simply call the base class compute if we aren't sampling this time step
+  steps_since_last_sample++;
+  if (steps_since_last_sample < sampling_frequency) {
+    PairMTP::compute(eflag, vflag);
+    return;
+  }
 
   ev_setup(eflag, vflag);
 
@@ -70,6 +75,16 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
   int **firstneigh =
       list->firstneigh;    //List  (head of array) of neighbours for a given central atom
 
+  // Resize the nbh extrapolation grades if needed. No need to initialize, first access is write
+  if (!pool_grades && nbh_count < inum) {
+    memory->grow(nbh_extrapolation_grades, inum, "nbh_extrapolation_grades");
+    nbh_count = inum;
+  }
+
+  // If are in configuration, we need to reset the working array once per compute call / config
+  if (pool_grades)
+    std::fill(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0] + coeff_count, 0.0);
+
   // Loop over all provided neighbourhoods
   for (int ii = 0; ii < inum; ii++) {
     const int i = ilist[ii];          // Set central atom index
@@ -82,15 +97,25 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     const double xi[3] = {x[i][0], x[i][1],
                           x[i][2]};    // Cache the position of the central atom for efficiency
 
+    // Resize the jacobian and cutoff if needed. No need to initialize, first access is write
     if (jac_size < jnum) {
-      memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3,
-                   "moment_jacobian");    // Resize the working jacobian.
+      memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3, "moment_jacobian");
+      memory->grow(within_cutoff, jnum, "within_cutoff");
       jac_size = jnum;
     }
-    std::fill(&moment_tensor_vals[0], &moment_tensor_vals[0] + alpha_moment_count,
-              0.0);    //Fill moments with 0
+
+    // Reset the working arrays
+    std::fill(&moment_tensor_vals[0], &moment_tensor_vals[0] + alpha_moment_count, 0.0);
     std::fill(&nbh_energy_ders_wrt_moments[0], &nbh_energy_ders_wrt_moments[0] + alpha_moment_count,
-              0.0);    //Fill moment derivatives with 0
+              0.0);
+    std::fill(&radial_moment_ders[0], &radial_moment_ders[0] + alpha_moment_count, 0.0);
+    std::fill(&radial_jacobian[0][0][0],
+              &radial_jacobian[0][0][0] +
+                  (alpha_index_basic_count * species_count * radial_coeff_count_per_pair),
+              0.0);
+
+    if (!pool_grades)
+      std::fill(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0] + coeff_count, 0.0);
 
     // ------------ Begin Alpha Basic Calc ------------
     // Loop over all neighbours
@@ -103,12 +128,15 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
                    "Too few species count in the MTP potential!");    // Might not need this check
 
       const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
+      const double rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
 
-      const double dist_sq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+      if (rsq > cutsq[itype + 1][jtype + 1]) {    //1 indexing
+        within_cutoff[jj] = false;
+        continue;
+      }
+      within_cutoff[jj] = true;
 
-      if (dist_sq > cutsq[itype + 1][jtype + 1]) continue;    //1 indexing
-
-      const double dist = std::sqrt(dist_sq);
+      const double dist = std::sqrt(rsq);
       radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
 
       // Precompute the coord and distance power
@@ -123,26 +151,31 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         double der = 0;
         int mu = alpha_index_basic[k][0];
 
-        //Find the offset for the radial basis coeffs
-        int pair_offset = itype * species_count + jtype;
-        int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
-
-        // Find the radial component and its derivative
-        for (int ri = 0; ri < radial_basis_size; ri++) {
-          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
-          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
-        }
-
         // Normalize by the rank of alpha's coresponding tensor
         int norm_rank = alpha_index_basic[k][1] + alpha_index_basic[k][2] + alpha_index_basic[k][3];
         double norm_fac = 1.0 / dist_powers[norm_rank];
-        val *= norm_fac;
-        der = der * norm_fac - norm_rank * val / dist;
 
         double pow0 = coord_powers[alpha_index_basic[k][1]][0];
         double pow1 = coord_powers[alpha_index_basic[k][2]][1];
         double pow2 = coord_powers[alpha_index_basic[k][3]][2];
         double pow = pow0 * pow1 * pow2;
+
+        //Find the offset for the radial basis coeffs
+        int pair_offset = itype * species_count + jtype;
+        int mu_offset = mu * radial_basis_size;
+        int offset = (pair_offset * radial_basis_size * radial_func_count) + mu_offset;
+
+        // Find the radial component and its derivative
+        for (int ri = 0; ri < radial_basis_size; ri++) {
+          double coeff_times_radial =
+              radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
+          val += coeff_times_radial;
+          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
+          radial_jacobian[k][jtype][mu_offset + ri] += coeff_times_radial * pow * norm_fac;
+        }
+
+        val *= norm_fac;
+        der = der * norm_fac - norm_rank * val / dist;
         moment_tensor_vals[k] += val * pow;
 
         // Get the component's derivatives too
@@ -175,15 +208,25 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     }
 
     // ------------ Convolve Basis Set From Alpha Map ------------
-    if (eflag_atom || eflag_global) {        // This could be replaced with eflag_either
-      nbh_energy = species_coeffs[itype];    // Essentially the reference point energy per species
-      for (int k = 0; k < alpha_scalar_count; k++)
-        nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
-
-      // Tally energies per flags
+    // Calculate the energies only if needed. We always need the basis member for extrapolation.
+    int linear_basis_offset = radial_coeff_count + species_count;
+    if (eflag_either) {
+      for (int k = 0; k < alpha_scalar_count; k++) {
+        double basis_member = moment_tensor_vals[alpha_moment_mapping[k]];
+        energy_ders_wrt_coeffs[linear_basis_offset + k] += basis_member;
+        nbh_energy += linear_coeffs[k] * basis_member;
+      }
+      // Tally energies per flags if needed
       if (eflag_atom) eatom[i] = nbh_energy;
       if (eflag_global) eng_vdwl += nbh_energy;
-    }
+    } else
+      for (int k = 0; k < alpha_scalar_count; k++)
+        energy_ders_wrt_coeffs[linear_basis_offset + k] +=
+            moment_tensor_vals[alpha_moment_mapping[k]];
+
+    // ------------ Also add the species coefficient ------------
+    for (int k = 0; k < species_count; k++)
+      energy_ders_wrt_coeffs[radial_coeff_count + k] += species_coeffs[k];
 
     // =========== Begin Backpropogation ===========
 
@@ -210,17 +253,24 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];
       j &= NEIGHMASK;
-
-      double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
-      double rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
-      if (rsq > max_cutoff_sq) continue;
+      if (!within_cutoff[jj]) continue;
 
       double temp_force[3] = {0, 0, 0};
-      for (int k = 0; k < alpha_index_basic_count; k++)
+      for (int k = 0; k < alpha_index_basic_count; k++) {
+        // Backprop relative to positions for forces
         for (int a = 0; a < 3; a++) {
           //Calculate forces
           temp_force[a] += nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][jj][a];
         }
+
+        //Backprop relative to radial coeffs for extrapolation
+        for (int jjtype = 0; jjtype < species_count; jjtype++) {
+          int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
+          for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
+            energy_ders_wrt_coeffs[offset + ri] +=
+                nbh_energy_ders_wrt_moments[k] * radial_jacobian[k][jjtype][ri];
+        }
+      }
 
       f[i][0] += temp_force[0];
       f[i][1] += temp_force[1];
@@ -232,6 +282,8 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
       //Calculate virial stress
       if (vflag) {
+        // We only need to calculate rel pos again if stress are needed
+        const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
         virial[0] -= temp_force[0] * r[0] * 2;    //xx
         virial[1] -= temp_force[1] * r[1] * 2;    //yy
         virial[2] -= temp_force[2] * r[2] * 2;    //zz
@@ -252,8 +304,50 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         }
       }
     }
+
+    if (!pool_grades) {
+      max_grade = 0;
+      double grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+      max_grade = std::max(grade, max_grade);
+      nbh_extrapolation_grades[ii] = grade;
+    }
+  }
+
+  // MPI reduce operations based on selection mode
+  if (pool_grades) {    // Configuration mode
+    MPI_Allreduce(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE,
+                  MPI_SUM, world);
+    if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+  } else {    // Neighbourhood mode
+    MPI_Allreduce(&max_grade, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
+  }
+
+  if (comm->me == 0) {
+    if (max_grade >= select_threshold)
+      utils::logmesg(lmp, "Exceeded Selection Threshold. Current Value: {}\n", max_grade);
+    if (max_grade > break_threshold)
+      // error->all(FLERR, "Exceeded Break Threshold. Terminating simulation.\n");
+      ;
   }
 }
+
+/* ----------------------------------------------------------------------
+   Extrapolation Calculation Function
+------------------------------------------------------------------------- */
+double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vector)
+{
+  // This should  use BLAS if possible
+  double max_grade = 0;
+  for (int i = 0; i < coeff_count; i++) {
+    double current_grade = 0;
+    for (int j = 0; j < coeff_count; j++) {
+      current_grade += candidate_vector[j] * inverse_active_set[j][i];
+    }
+    max_grade = std::max(current_grade, max_grade);
+  }
+  return max_grade;
+}
+
 /* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */
@@ -275,6 +369,8 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
           lmp,
           "Pair mtp/extrapolation only accepts 4 or 5 arguments: {potential_file} "
           "{extrapolation_mode} "
+          // To avoid excessive copying and reduce memory footprint, we can set the pointer
+          // for moment tensor vals to the appropriate index within energy_ders_wrt_coeffs
           "{selection_threshold} {break_threshold} {sampling_frequency, optional}. Ignoring "
           "excessive "
           "arguments!\n");
@@ -295,35 +391,36 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
   if (narg == 5) sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
 
-  utils::logmesg(lmp,
-                 "Sampling Scheme: Sampling every {} timestep(s) with a selection threshold of {} "
-                 "and break threshold of {}\n",
-                 sampling_frequency, select_threshold, break_threshold);
+  if (comm->me == 0)
+    utils::logmesg(
+        lmp,
+        "Sampling Scheme: Sampling every {} timestep(s) with a selection threshold of {} "
+        "and break threshold of {}.\n",
+        sampling_frequency, select_threshold, break_threshold);
 
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
-  read_file(mtp_file);
+  read_file(mtp_file, arg[0]);
 }
 
 /* ----------------------------------------------------------------------
    MTP file parsing helper function. Includes memory allocation. Excludes some radial basis hyperparameters (in radial basis constructor instead).
 ------------------------------------------------------------------------- */
-void PairMTPExtrapolation::read_file(FILE *mtp_file)
+void PairMTPExtrapolation::read_file(FILE *mtp_file, char *file_path)
 {
   PairMTP::read_file(mtp_file);
 
   // Some size calcs
-  int pairs_count = species_count * species_count;
-  int radial_coeff_count_per_pair = radial_basis_size * radial_func_count;
-  int radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
   coeff_count = radial_coeff_count + species_count + alpha_scalar_count;
-  int num_ele = coeff_count * coeff_count;
+  int num_doubles = coeff_count * coeff_count;
 
   // Now we allocate memory for the additional memory needed for calculations
-  memory->create(active_set, coeff_count, coeff_count, "pair:active_set");
-  memory->create(inverse_active_set, coeff_count, coeff_count, "pair:inverse_active_set");
-  memory->create(radial_moment_ders, alpha_moment_count, "pair:radial_moment_ders");
-  memory->create(energy_ders_wrt_coeffs, coeff_count, "pair:energy_ders_wrt_coeffs");
-  // We initialize the radial jacobian and extrapolation grades during compute since their run size depend on problem size.
+  memory->create(active_set, coeff_count, coeff_count, "active_set");
+  memory->create(inverse_active_set, coeff_count, coeff_count, "inverse_active_set");
+  memory->create(radial_moment_ders, alpha_moment_count, "radial_moment_ders");
+  memory->create(energy_ders_wrt_coeffs, coeff_count, "energy_ders_wrt_coeffs");
+  memory->create(radial_jacobian, alpha_index_basic_count, species_count,
+                 radial_coeff_count_per_pair, "radial_jacobian");
+  // We initialize the extrapolation grades during compute since its size depend on problem size.
 
   if (comm->me == 0) {
     std::string new_separators = "=, ";
@@ -332,55 +429,51 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
     tfr.ignore_comments = false;
 
     // Read the weights. Not used but serves as a check.
-    {
-      ValueTokenizer line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      std::string keyword = line_tokens.next_string();
-      if (keyword != "#MVS_v1.1") {    // If there are no
-        utils::logmesg(lmp,
-                       "Untrained potential found. If the potential specified have been previously "
-                       "trained, please verify that the MVS version is \"MVS_v1.1\". \n",
-                       keyword);
-        untrained_potential = true;
-        return;
-      }
-      tfr.ignore_comments = true;    // Accept comments after reading the version which is a comment
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "energy_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, energy_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "force_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, force_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "stress_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, stress_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "site_en_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, site_en_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "weight_scaling")
-        lmp->error->all(FLERR, "Error in reading MTP file, weight_scaling");
-
-      // Read the active set and its inverse
-      // It is store as a binary file so we need to use sfreads
-      utils::sfread(FLERR, &active_set[0][0], sizeof(double), num_ele, mtp_file, nullptr,
-                    lmp->error);
-      utils::sfread(FLERR, &inverse_active_set[0][0], sizeof(double), num_ele, mtp_file, nullptr,
-                    lmp->error);
+    ValueTokenizer line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    std::string keyword = line_tokens.next_string();
+    if (keyword != "#MVS_v1.1") {    // If there are no
+      utils::logmesg(lmp,
+                     "Untrained potential found. If the potential specified have been previously "
+                     "trained, please verify that the MVS version is \"MVS_v1.1\". \n",
+                     keyword);
+      untrained_potential = true;
+      return;
     }
+    tfr.ignore_comments = true;    // Accept comments after reading the version which is a comment
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "energy_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, energy_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "force_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, force_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "stress_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, stress_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "site_en_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, site_en_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "weight_scaling")
+      lmp->error->all(FLERR, "Error in reading MTP file, weight_scaling");
+
+    fgetc(mtp_file);    // We need to skip foward 1 character. There is a # before the binary data.
+    utils::sfread(FLERR, &active_set[0][0], sizeof(double), num_doubles, mtp_file, nullptr,
+                  lmp->error);
+    utils::sfread(FLERR, &inverse_active_set[0][0], sizeof(double), num_doubles, mtp_file, nullptr,
+                  lmp->error);
   }
 
-  utils::logmesg(lmp, "\n\nCore {}, Coeff {}\n\n", comm->me, coeff_count);
-  //Broadcast to others
-  MPI_Bcast(&active_set[0][0], num_ele, MPI_DOUBLE, 0, world);
-  MPI_Bcast(&inverse_active_set[0][0], num_ele, MPI_DOUBLE, 0, world);
+  //Broadcast active set to others
+  MPI_Bcast(&active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&inverse_active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
 }

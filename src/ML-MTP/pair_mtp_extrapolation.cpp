@@ -30,6 +30,7 @@
 
 #include <cmath>
 #include <csignal>
+#include <fstream>
 
 using namespace LAMMPS_NS;
 
@@ -40,11 +41,9 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
   if (allocated) {
     memory->destroy(active_set);
     memory->destroy(inverse_active_set);
-    // memory->destroy(nbh_extrapolation_grades);
-    // memory->destroy(radial_jacobian);
-    // memory->destroy(radial_basic_ders);
-    memory->destroy(radial_moment_ders);
+    memory->destroy(radial_jacobian);
     memory->destroy(energy_ders_wrt_coeffs);
+    if (!pool_grades) memory->destroy(nbh_extrapolation_grades);
   }
 }
 
@@ -110,9 +109,9 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     std::fill(&nbh_energy_ders_wrt_moments[0], &nbh_energy_ders_wrt_moments[0] + alpha_moment_count,
               0.0);
     std::fill(&radial_moment_ders[0], &radial_moment_ders[0] + alpha_moment_count, 0.0);
-    std::fill(&radial_jacobian[0][0],
-              &radial_jacobian[0][0] +
-                  (species_count * species_count * radial_basis_size * radial_func_count),
+    std::fill(&radial_jacobian[0][0][0],
+              &radial_jacobian[0][0][0] +
+                  (alpha_index_basic_count * species_count * radial_coeff_count_per_pair),
               0.0);
 
     if (!pool_grades)
@@ -327,8 +326,8 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     if (max_grade >= select_threshold)
       utils::logmesg(lmp, "Exceeded Selection Threshold. Current Value: {}\n", max_grade);
     if (max_grade > break_threshold)
-      error->all(FLERR, "Exceeded Break Threshold. Current Value: {}. Terminating simulation.\n",
-                 max_grade);
+      // error->all(FLERR, "Exceeded Break Threshold. Terminating simulation.\n");
+      ;
   }
 }
 
@@ -392,19 +391,21 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
   if (narg == 5) sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
 
-  utils::logmesg(lmp,
-                 "Sampling Scheme: Sampling every {} timestep(s) with a selection threshold of {} "
-                 "and break threshold of {}\n",
-                 sampling_frequency, select_threshold, break_threshold);
+  if (comm->me == 0)
+    utils::logmesg(
+        lmp,
+        "Sampling Scheme: Sampling every {} timestep(s) with a selection threshold of {} "
+        "and break threshold of {}.\n",
+        sampling_frequency, select_threshold, break_threshold);
 
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
-  read_file(mtp_file);
+  read_file(mtp_file, arg[0]);
 }
 
 /* ----------------------------------------------------------------------
    MTP file parsing helper function. Includes memory allocation. Excludes some radial basis hyperparameters (in radial basis constructor instead).
 ------------------------------------------------------------------------- */
-void PairMTPExtrapolation::read_file(FILE *mtp_file)
+void PairMTPExtrapolation::read_file(FILE *mtp_file, char *file_path)
 {
   PairMTP::read_file(mtp_file);
 
@@ -417,8 +418,8 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
   memory->create(inverse_active_set, coeff_count, coeff_count, "inverse_active_set");
   memory->create(radial_moment_ders, alpha_moment_count, "radial_moment_ders");
   memory->create(energy_ders_wrt_coeffs, coeff_count, "energy_ders_wrt_coeffs");
-  memory->create(radial_jacobian, species_count, species_count, radial_coeff_count,
-                 "radial_jacobian");
+  memory->create(radial_jacobian, alpha_index_basic_count, species_count,
+                 radial_coeff_count_per_pair, "radial_jacobian");
   // We initialize the extrapolation grades during compute since its size depend on problem size.
 
   if (comm->me == 0) {
@@ -465,8 +466,7 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
     if (keyword != "weight_scaling")
       lmp->error->all(FLERR, "Error in reading MTP file, weight_scaling");
 
-    // Read the active set and its inverse
-    // It is store as a binary file so we need to use sfreads
+    fgetc(mtp_file);    // We need to skip foward 1 character. There is a # before the binary data.
     utils::sfread(FLERR, &active_set[0][0], sizeof(double), num_doubles, mtp_file, nullptr,
                   lmp->error);
     utils::sfread(FLERR, &inverse_active_set[0][0], sizeof(double), num_doubles, mtp_file, nullptr,
