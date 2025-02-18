@@ -37,15 +37,14 @@ using namespace LAMMPS_NS;
 
 PairMTPExtrapolation::~PairMTPExtrapolation()
 {
-  PairMTP::~PairMTP();
   if (allocated) {
     memory->destroy(active_set);
     memory->destroy(inverse_active_set);
-    memory->destroy(extrapolation_grades);
-    memory->destroy(radial_jacobian);
-    memory->destroy(radial_basic_ders);
+    // memory->destroy(extrapolation_grades);
+    // memory->destroy(radial_jacobian);
+    // memory->destroy(radial_basic_ders);
     memory->destroy(radial_moment_ders);
-    memory->destroy(basis_ders_wrt_coeffs);
+    memory->destroy(energy_ders_wrt_coeffs);
   }
 }
 
@@ -312,13 +311,19 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
 {
   PairMTP::read_file(mtp_file);
 
-  // Now we allocate memory for the active set and its inverse
+  // Some size calcs
   int pairs_count = species_count * species_count;
   int radial_coeff_count_per_pair = radial_basis_size * radial_func_count;
   int radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
   coeff_count = radial_coeff_count + species_count + alpha_scalar_count;
+  int num_ele = coeff_count * coeff_count;
+
+  // Now we allocate memory for the additional memory needed for calculations
   memory->create(active_set, coeff_count, coeff_count, "pair:active_set");
   memory->create(inverse_active_set, coeff_count, coeff_count, "pair:inverse_active_set");
+  memory->create(radial_moment_ders, alpha_moment_count, "pair:radial_moment_ders");
+  memory->create(energy_ders_wrt_coeffs, coeff_count, "pair:energy_ders_wrt_coeffs");
+  // We initialize the radial jacobian and extrapolation grades during compute since their run size depend on problem size.
 
   if (comm->me == 0) {
     std::string new_separators = "=, ";
@@ -327,50 +332,51 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
     tfr.ignore_comments = false;
 
     // Read the weights. Not used but serves as a check.
-    {
-      ValueTokenizer line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      std::string keyword = line_tokens.next_string();
-      if (keyword != "#MVS_v1.1") {    // If there are no
-        utils::logmesg(lmp,
-                       "Untrained potential found. If the potential specified have been previously "
-                       "trained, please verify that the MVS version is \"MVS_v1.1\". \n",
-                       keyword);
-        untrained_potential = true;
-        return;
-      }
-      tfr.ignore_comments = true;    // Accept comments after reading the version which is a comment
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "energy_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, energy_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "force_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, force_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "stress_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, stress_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "site_en_weight")
-        lmp->error->all(FLERR, "Error in reading MTP file, site_en_weight");
-
-      line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
-      keyword = line_tokens.next_string();
-      if (keyword != "weight_scaling")
-        lmp->error->all(FLERR, "Error in reading MTP file, weight_scaling");
+    ValueTokenizer line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    std::string keyword = line_tokens.next_string();
+    if (keyword != "#MVS_v1.1") {    // If there are no
+      utils::logmesg(lmp,
+                     "Untrained potential found. If the potential specified have been previously "
+                     "trained, please verify that the MVS version is \"MVS_v1.1\". \n",
+                     keyword);
+      untrained_potential = true;
+      return;
     }
+    tfr.ignore_comments = true;    // Accept comments after reading the version which is a comment
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "energy_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, energy_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "force_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, force_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "stress_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, stress_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "site_en_weight")
+      lmp->error->all(FLERR, "Error in reading MTP file, site_en_weight");
+
+    line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
+    keyword = line_tokens.next_string();
+    if (keyword != "weight_scaling")
+      lmp->error->all(FLERR, "Error in reading MTP file, weight_scaling");
 
     // Read the active set and its inverse
     // It is store as a binary file so we need to use sfreads
-    int num_ele = coeff_count * coeff_count;
-    utils::sfread(FLERR, active_set, sizeof(double), num_ele, mtp_file, nullptr, lmp->error);
-    utils::sfread(FLERR, inverse_active_set, sizeof(double), num_ele, mtp_file, nullptr,
+    utils::sfread(FLERR, &active_set[0][0], sizeof(double), num_ele, mtp_file, nullptr, lmp->error);
+    utils::sfread(FLERR, &inverse_active_set[0][0], sizeof(double), num_ele, mtp_file, nullptr,
                   lmp->error);
   }
+
+  //Broadcast active set to others
+  MPI_Bcast(&active_set[0][0], num_ele, MPI_DOUBLE, 0, world);
+  MPI_Bcast(&inverse_active_set[0][0], num_ele, MPI_DOUBLE, 0, world);
 }

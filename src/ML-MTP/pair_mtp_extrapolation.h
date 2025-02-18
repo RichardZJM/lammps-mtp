@@ -31,7 +31,7 @@ namespace LAMMPS_NS {
 class PairMTPExtrapolation : public PairMTP {
  public:
   PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp) {};
-  ~PairMTPExtrapolation() override;
+  ~PairMTPExtrapolation();
   void compute(int, int) override;         //Workhorse comuptation
   void settings(int, char **) override;    // Reads args from "pair_style"
 
@@ -46,15 +46,18 @@ class PairMTPExtrapolation : public PairMTP {
   double select_threshold;       // Grade threshold for selection
   double break_threshold;        // Grade threshold for termination
 
+  // Active set
   double **active_set;            // Current active set
   double **inverse_active_set;    // Inverse of the current active set
 
   //Working buffers
-  double *extrapolation_grades;     // Extrapolation grades of all neighbourhoods
-  double ***radial_jacobian;        // Jacobian of radial component wrt to basic moments
-  double *radial_basic_ders;        // Energy ders wrt to basic moments
-  double *radial_moment_ders;       //Ders of non-elemnetary moments wrt to basis moments
-  double *basis_ders_wrt_coeffs;    // Candidate information vector
+  double ***radial_jacobian;    // Jacobian of radial component wrt to basic moments
+  //   double *radial_basic_ders;            // Energy ders wrt to basic moments
+  double *radial_moment_ders;        //Ders of non-elemnetary moments wrt to basis moments
+  double *energy_ders_wrt_coeffs;    // Candidate information vector
+
+  // Only needed for neigbhourhood mode
+  double *extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
 };
 
 }    // namespace LAMMPS_NS
