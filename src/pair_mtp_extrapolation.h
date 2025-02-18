@@ -57,7 +57,7 @@ class PairMTPExtrapolation : public PairMTP {
   double *energy_ders_wrt_coeffs;    // Candidate information vector
 
   // Only needed for neigbhourhood mode
-  double *extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
+  double *nbh_extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
 };
 
 }    // namespace LAMMPS_NS

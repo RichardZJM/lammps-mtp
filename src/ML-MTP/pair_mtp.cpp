@@ -146,7 +146,7 @@ void PairMTP::compute(int eflag, int vflag)
 
         //Find the offset for the radial basis coeffs
         int pair_offset = itype * species_count + jtype;
-        int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
+        int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
 
         // Find the radial component and its derivative
         for (int ri = 0; ri < radial_basis_size; ri++) {
@@ -584,8 +584,8 @@ Might be able to replace that section with next_values which is in both TFR and 
 
   // Precalc some constatns
   int pairs_count = species_count * species_count;
-  int radial_coeff_count_per_pair = radial_basis_size * radial_func_count;
-  int radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
+  radial_coeff_count_per_pair = radial_basis_size * radial_func_count;
+  radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
   int np1 = (species_count + 1);
 
   // Now we allocate memory for all the arrays.

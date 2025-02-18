@@ -32,7 +32,7 @@ namespace LAMMPS_NS {
 class PairMTP : public Pair {
  public:
   PairMTP(class LAMMPS *);
-  ~PairMTP() override;
+  ~PairMTP();
   void compute(int, int) override;         //Workhorse comuptation
   void settings(int, char **) override;    // Reads args from "pair_style"
   void coeff(int, char **) override;       // Reads args from "pair_coeff" (only * * for mtp)
@@ -49,13 +49,15 @@ class PairMTP : public Pair {
 
   // Radial basis
   //1 => "RBChebyshev"
-  int radial_basis_type_index;     // Index for MPI Bcast
-  RadialMTPBasis *radial_basis;    // Pointer to basis object
-  double *radial_basis_coeffs;     // These are the radial basis coeffs (c)
-  int radial_func_count;           // Number of radial bases (mu_max)
-  int radial_basis_size;           // Number of elements in bases
-  double min_cutoff;               // Min radial cutoff
-  double max_cutoff;               // Max radial cutoff
+  int radial_basis_type_index;        // Index for MPI Bcast
+  RadialMTPBasis *radial_basis;       // Pointer to basis object
+  double *radial_basis_coeffs;        // These are the radial basis coeffs (c)
+  int radial_func_count;              // Number of radial bases (mu_max)
+  int radial_basis_size;              // Number of elements in bases
+  int radial_coeff_count;             // Number of total radial coeffs
+  int radial_coeff_count_per_pair;    // Number of coeffs for species pair
+  double min_cutoff;                  // Min radial cutoff
+  double max_cutoff;                  // Max radial cutoff
   double
       max_cutoff_sq;    // Maximum radial cutoff squared (The MTP only supports one cutoff for all species combinations)
 

@@ -40,7 +40,7 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
   if (allocated) {
     memory->destroy(active_set);
     memory->destroy(inverse_active_set);
-    // memory->destroy(extrapolation_grades);
+    // memory->destroy(nbh_extrapolation_grades);
     // memory->destroy(radial_jacobian);
     // memory->destroy(radial_basic_ders);
     memory->destroy(radial_moment_ders);
