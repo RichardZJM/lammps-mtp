@@ -92,7 +92,7 @@ void PairMTP::compute(int eflag, int vflag)
     const int i = ilist[ii];          // Set central atom index
     const int itype = type[i] - 1;    // Set central atom type. Convert back to zero indexing.
     if (itype >= species_count)
-      error->all(FLERR,
+      error->one(FLERR,
                  "Too few species count in the MTP potential!");    // Might not need this check
     int jnum = numneigh[i];                                         // Set number of neighbours
     double nbh_energy = 0;
@@ -117,7 +117,7 @@ void PairMTP::compute(int eflag, int vflag)
       j &= NEIGHMASK;
       const int jtype = type[j] - 1;    // Convert back to zero indexing
       if (jtype >= species_count)
-        error->all(FLERR,
+        error->one(FLERR,
                    "Too few species count in the MTP potential!");    // Might not need this check
 
       const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
@@ -345,10 +345,10 @@ Might be able to replace that section with next_values which is in both TFR and 
     std::string keyword = line_tokens.next_string();
 
     if (keyword != "MTP")    // Files checking
-      error->all(FLERR, "Only MTP potential files are accepted.");
+      error->one(FLERR, "Only MTP potential files are accepted.");
     std::string version_line = std::string(tfr.next_line());
     if (version_line != "version = 1.1.0\n")    // Version checking
-      error->all(FLERR, "MTP file must have version \"1.1.0\"");
+      error->one(FLERR, "MTP file must have version \"1.1.0\"");
 
     // Read the potential name (optional)
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
@@ -377,7 +377,7 @@ Might be able to replace that section with next_values which is in both TFR and 
 
     // Read the species count
     if (keyword != "species_count")
-      error->all(FLERR, "Error reading MTP file. Species count not found.");
+      error->one(FLERR, "Error reading MTP file. Species count not found.");
     species_count = line_tokens.next_int();
     utils::logmesg(lmp, "There are {} species.\n", species_count);
 
@@ -400,7 +400,7 @@ Might be able to replace that section with next_values which is in both TFR and 
 
     // Read the radial basis type
     if (keyword != "radial_basis_type")
-      error->all(FLERR, "Error reading MTP file. No radial basis set type is specified.");
+      error->one(FLERR, "Error reading MTP file. No radial basis set type is specified.");
     std::string radial_basis_type = line_tokens.next_string();
 
     // Set the type of radial basis. No switch/case with strings...
@@ -410,7 +410,7 @@ Might be able to replace that section with next_values which is in both TFR and 
       radial_basis_size = radial_basis->size;
       radial_basis_type_index = 1;
     } else
-      error->all(FLERR,
+      error->one(FLERR,
                  "Error reading MTP file. The specified radial basis set type, {}, was not found..",
                  radial_basis_type);
 
@@ -418,7 +418,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
     keyword = line_tokens.next_string();
     if (keyword != "radial_funcs_count")
-      lmp->error->all(FLERR, "Error in reading MTP file. Cannot read radial function count.");
+      lmp->error->one(FLERR, "Error in reading MTP file. Cannot read radial function count.");
     radial_func_count = line_tokens.next_int();    // Assuming count is an int
 
     // Check for magnetic basis which is currently unsupported.
@@ -426,9 +426,9 @@ Might be able to replace that section with next_values which is in both TFR and 
     keyword = line_tokens.next_string();
     if (keyword != "radial_coeffs") {
       if (keyword == "magnetic_basis_type")
-        error->all(FLERR, "Magnetic basis is currently not supported.");
+        error->one(FLERR, "Magnetic basis is currently not supported.");
       else
-        error->all(FLERR, "Error in reading MTP file. Cannot read radial coeffs count.");
+        error->one(FLERR, "Error in reading MTP file. Cannot read radial coeffs count.");
     }
 
     // Allocate memory for radial basis
@@ -465,7 +465,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_moments_count")
-      error->all(FLERR, "Error reading MTP file. Alpha moment count not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha moment count not found.");
     alpha_moment_count = line_tokens.next_int();
     memory->create(moment_tensor_vals, alpha_moment_count, "moment_tensor_vals");
     memory->create(nbh_energy_ders_wrt_moments, alpha_moment_count, "nbh_energy_ders_wrt_moments");
@@ -474,7 +474,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_basic_count")
-      error->all(FLERR, "Error reading MTP file. Alpha moment count not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha moment count not found.");
     alpha_index_basic_count = line_tokens.next_int();
 
     // Read the basic alphas
@@ -487,7 +487,7 @@ Might be able to replace that section with next_values which is in both TFR and 
 
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_basic")
-      error->all(FLERR, "Error reading MTP file. Alpha index basic not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha index basic not found.");
     memory->create(alpha_index_basic, alpha_index_basic_count, 4, "alpha_index_basic");
     for (int i = 0; i < alpha_index_basic_count; i++) {
       for (int j = 0; j < 4; j++) {
@@ -497,7 +497,7 @@ Might be able to replace that section with next_values which is in both TFR and 
       if (alpha_index_basic[i][0] > radial_func_max) radial_func_max = alpha_index_basic[i][0];
     }
     if (radial_func_max != radial_func_count - 1)    //Index validity check
-      error->all(FLERR, "Wrong number of radial functions specified!");
+      error->one(FLERR, "Wrong number of radial functions specified!");
 
     //Precompute the maximum alpha basic index
     max_alpha_index_basic = 0;
@@ -515,7 +515,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_times_count")
-      error->all(FLERR, "Error reading MTP file. Alpha index times count not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha index times count not found.");
     alpha_index_times_count = line_tokens.next_int();
 
     // Read the alphas times
@@ -526,7 +526,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_times")
-      error->all(FLERR, "Error reading MTP file. Alpha index times not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha index times not found.");
     memory->create(alpha_index_times, alpha_index_times_count, 4, "alpha_index_times");
     for (int i = 0; i < alpha_index_times_count; i++) {
       for (int j = 0; j < 4; j++) { alpha_index_times[i][j] = line_tokens.next_int(); }
@@ -536,14 +536,14 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
     if (keyword != "alpha_scalar_moments")
-      error->all(FLERR, "Error reading MTP file. Alpha scalar moment count not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha scalar moment count not found.");
     alpha_scalar_count = line_tokens.next_int();
 
     //Read the alpha moment mappings
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_moment_mapping")
-      error->all(FLERR, "Error reading MTP file. Alpha moment mappings not found.");
+      error->one(FLERR, "Error reading MTP file. Alpha moment mappings not found.");
     memory->create(alpha_moment_mapping, alpha_scalar_count, "alpha_moment_mapping");
     for (int i = 0; i < alpha_scalar_count; i++) {
       alpha_moment_mapping[i] = line_tokens.next_int();
@@ -554,7 +554,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "species_coeffs")
-      error->all(FLERR, "Error reading MTP file. Species coefficients not found.");
+      error->one(FLERR, "Error reading MTP file. Species coefficients not found.");
     memory->create(species_coeffs, species_count, "species_coeffs");
     for (int i = 0; i < species_count; i++) { species_coeffs[i] = line_tokens.next_double(); }
 
@@ -562,7 +562,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "moment_coeffs")
-      error->all(FLERR, "Error reading MTP file. Moment coefficients not found.");
+      error->one(FLERR, "Error reading MTP file. Moment coefficients not found.");
     memory->create(linear_coeffs, alpha_scalar_count, "moment_coeffs");
     for (int i = 0; i < alpha_scalar_count; i++) { linear_coeffs[i] = line_tokens.next_double(); }
   }    // Proc 0

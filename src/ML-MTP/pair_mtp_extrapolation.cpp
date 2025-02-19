@@ -314,21 +314,21 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     }
   }
 
-  // compile_grades(energy_ders_wrt_coeffs);
+  compile_grades(energy_ders_wrt_coeffs);
 
-  if (pool_grades) {    // Configuration mode
-    MPI_Allreduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM,
-                  world);
-    if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
-  } else {    // Neighbourhood mode
-    MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
-  }
+  // if (pool_grades) {    // Configuration mode
+  //   MPI_Allreduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM,
+  //                 world);
+  //   if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+  // } else {    // Neighbourhood mode
+  //   MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
+  // }
 
   if (comm->me == 0) {
     if (max_grade >= select_threshold)
       ;
     if (max_grade > break_threshold)
-      error->all(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
+      error->one(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
   }
 }
 
@@ -356,7 +356,6 @@ double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vec
 void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 {
   // MPI reduce operations based on selection mode
-  std::cout << pool_grades << std::endl;
   if (pool_grades) {    // Configuration mode
     if (comm->me == 0)
       MPI_Reduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM, 0,
@@ -380,19 +379,18 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 
 void PairMTPExtrapolation::settings(int narg, char **arg)
 {
-  if (comm->me == 0) {
-    if (narg < 6)
-      error->all(FLERR,
-                 "Pair mtp/extrapolation only accepts 6 arguments: {potential_file} "
-                 "{extrapolation_mode} {selection_threshold} {break_threshold} "
-                 "{sampling_frequency} {output_file}. Currently "
-                 "specified: {} arguments!",
-                 narg);
-    if (narg > 6)
-      utils::logmesg(lmp,
-                     "Pair mtp/extrapolation only accepts 6 arguments. Ignoring "
-                     "excessive arguments!\n");
-  }
+
+  if (narg < 6)
+    error->all(FLERR,
+               "Pair mtp/extrapolation only accepts 6 arguments: {potential_file} "
+               "{extrapolation_mode} {selection_threshold} {break_threshold} "
+               "{sampling_frequency} {output_file}. Currently "
+               "specified: {} arguments!",
+               narg);
+  if (narg > 6)
+    utils::logmesg(lmp,
+                   "Pair mtp/extrapolation only accepts 6 arguments. Ignoring "
+                   "excessive arguments!\n");
 
   std::string mode_name = LAMMPS_NS::utils::lowercase(arg[1]);
   if (mode_name == "neighborhood" || mode_name == "neighbourhood")    //support for british spelling
