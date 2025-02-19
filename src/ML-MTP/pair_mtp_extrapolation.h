@@ -38,6 +38,7 @@ class PairMTPExtrapolation : public PairMTP {
  protected:
   void read_file(FILE *, char *);                    //Parsing file using LAMMPS utils
   double calculate_extrapolation_grade(double *);    // Grades from candidate vector
+  void compile_grades(double *);                     // Collect grades across collective
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 

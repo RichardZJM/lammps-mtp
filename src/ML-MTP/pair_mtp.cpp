@@ -286,6 +286,7 @@ void PairMTP::settings(int narg, char **arg)
         "Pair MTP only accepts 1 argument, the MTP potential file. Ignoring other arguments!\n");
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
   read_file(mtp_file);
+  fclose(mtp_file);
 }
 
 /* ----------------------------------------------------------------------

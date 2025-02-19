@@ -314,7 +314,8 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     }
   }
 
-  // MPI reduce operations based on selection mode
+  // compile_grades(energy_ders_wrt_coeffs);
+
   if (pool_grades) {    // Configuration mode
     MPI_Allreduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM,
                   world);
@@ -325,10 +326,9 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
   if (comm->me == 0) {
     if (max_grade >= select_threshold)
-      utils::logmesg(lmp, "Exceeded Selection Threshold. Current Value: {}\n", max_grade);
+      ;
     if (max_grade > break_threshold)
-      error->all(FLERR, "Exceeded Break Threshold. Terminating simulation.\n");
-    ;
+      error->all(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
   }
 }
 
@@ -346,8 +346,32 @@ double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vec
     }
     max_grade = std::max(std::abs(current_grade), max_grade);
   }
-  // This division by to ensure back-compatability. Not mathematical necesary.
+  // This division by 2 ensures back-compatability. Not mathematical necesary.
   return max_grade / 2;
+}
+
+/* ----------------------------------------------------------------------
+   Collective Reduction Operation 
+------------------------------------------------------------------------- */
+void PairMTPExtrapolation::compile_grades(double *candidate_vector)
+{
+  // MPI reduce operations based on selection mode
+  std::cout << pool_grades << std::endl;
+  if (pool_grades) {    // Configuration mode
+    if (comm->me == 0)
+      MPI_Reduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM, 0,
+                 world);
+    else
+      MPI_Reduce(&energy_ders_wrt_coeffs[0], nullptr, coeff_count, MPI_DOUBLE, MPI_SUM, 0, world);
+
+    if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+
+  } else {    // Neighbourhood mode
+    if (comm->me == 0)
+      MPI_Reduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, 0, world);
+    else
+      MPI_Reduce(&max_grade, nullptr, 1, MPI_DOUBLE, MPI_MAX, 0, world);
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -356,26 +380,18 @@ double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vec
 
 void PairMTPExtrapolation::settings(int narg, char **arg)
 {
-
   if (comm->me == 0) {
-    if (narg < 4)
-      error->all(
-          FLERR,
-          "Pair mtp/extrapolation only accepts 4 or 5 arguments: {potential_file} "
-          "{extrapolation_mode} "
-          "{selection_threshold} {break_threshold} {sampling_frequency, optional}. Currently "
-          "specified: {} arguments!",
-          narg);
-    if (narg > 5)
-      utils::logmesg(
-          lmp,
-          "Pair mtp/extrapolation only accepts 4 or 5 arguments: {potential_file} "
-          "{extrapolation_mode} "
-          // To avoid excessive copying and reduce memory footprint, we can set the pointer
-          // for moment tensor vals to the appropriate index within energy_ders_wrt_coeffs
-          "{selection_threshold} {break_threshold} {sampling_frequency, optional}. Ignoring "
-          "excessive "
-          "arguments!\n");
+    if (narg < 6)
+      error->all(FLERR,
+                 "Pair mtp/extrapolation only accepts 6 arguments: {potential_file} "
+                 "{extrapolation_mode} {selection_threshold} {break_threshold} "
+                 "{sampling_frequency} {output_file}. Currently "
+                 "specified: {} arguments!",
+                 narg);
+    if (narg > 6)
+      utils::logmesg(lmp,
+                     "Pair mtp/extrapolation only accepts 6 arguments. Ignoring "
+                     "excessive arguments!\n");
   }
 
   std::string mode_name = LAMMPS_NS::utils::lowercase(arg[1]);
@@ -391,7 +407,7 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
 
   select_threshold = utils::numeric(FLERR, arg[2], true, lmp);
   break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
-  if (narg == 5) sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
+  sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
 
   if (comm->me == 0)
     utils::logmesg(
@@ -402,6 +418,7 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
 
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
   read_file(mtp_file, arg[0]);
+  fclose(mtp_file);
 }
 
 /* ----------------------------------------------------------------------
