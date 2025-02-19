@@ -31,6 +31,7 @@
 #include <cmath>
 #include <csignal>
 #include <fstream>
+#include <iostream>
 
 using namespace LAMMPS_NS;
 
@@ -167,11 +168,10 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
         // Find the radial component and its derivative
         for (int ri = 0; ri < radial_basis_size; ri++) {
-          double coeff_times_radial =
-              radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
-          val += coeff_times_radial;
+          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
           der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
-          radial_jacobian[k][jtype][mu_offset + ri] += coeff_times_radial * pow * norm_fac;
+          radial_jacobian[k][jtype][mu_offset + ri] +=
+              radial_basis->radial_basis_vals[ri] * norm_fac * pow;
         }
 
         val *= norm_fac;
@@ -225,8 +225,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
             moment_tensor_vals[alpha_moment_mapping[k]];
 
     // ------------ Also add the species coefficient ------------
-    for (int k = 0; k < species_count; k++)
-      energy_ders_wrt_coeffs[radial_coeff_count + k] += species_coeffs[k];
+    energy_ders_wrt_coeffs[radial_coeff_count + itype] += 1;    //species_coeffs[itype];
 
     // =========== Begin Backpropogation ===========
 
@@ -249,7 +248,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       nbh_energy_ders_wrt_moments[a0] += val3 * multipiler * val1;
     }
 
-    //------------ Step 3: Multiply energy ders wrt moment by the Jacobian to get forces ------------
+    //------------ Step 3: Multiply energy ders wrt moment by the moment jacobian to get forces ------------
     for (int jj = 0; jj < jnum; jj++) {
       int j = firstneigh[i][jj];
       j &= NEIGHMASK;
@@ -261,14 +260,6 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         for (int a = 0; a < 3; a++) {
           //Calculate forces
           temp_force[a] += nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][jj][a];
-        }
-
-        //Backprop relative to radial coeffs for extrapolation
-        for (int jjtype = 0; jjtype < species_count; jjtype++) {
-          int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
-          for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
-            energy_ders_wrt_coeffs[offset + ri] +=
-                nbh_energy_ders_wrt_moments[k] * radial_jacobian[k][jjtype][ri];
         }
       }
 
@@ -305,6 +296,16 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       }
     }
 
+    //------------ Step 3.5: Multiply energy ders wrt moment by the radial jacobian to get rad ders ------------
+    for (int k = 0; k < alpha_index_basic_count; k++)
+      for (int jjtype = 0; jjtype < species_count; jjtype++) {
+        int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
+        for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
+          energy_ders_wrt_coeffs[offset + ri] +=
+              nbh_energy_ders_wrt_moments[k] * radial_jacobian[k][jjtype][ri];
+      }
+
+    // Directly calculate extraplation grade for neighbourhood mode
     if (!pool_grades) {
       max_grade = 0;
       double grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
