@@ -316,11 +316,11 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
   // MPI reduce operations based on selection mode
   if (pool_grades) {    // Configuration mode
-    MPI_Allreduce(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE,
-                  MPI_SUM, world);
+    MPI_Allreduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM,
+                  world);
     if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
   } else {    // Neighbourhood mode
-    MPI_Allreduce(&max_grade, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
+    MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
   }
 
   if (comm->me == 0) {
@@ -342,11 +342,11 @@ double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vec
   for (int i = 0; i < coeff_count; i++) {
     double current_grade = 0;
     for (int j = 0; j < coeff_count; j++) {
-      current_grade += candidate_vector[j] * inverse_active_set[j][i];
+      current_grade += candidate_vector[j] * inverse_active_set[i][j];
     }
-    max_grade = std::max(current_grade, max_grade);
+    max_grade = std::max(std::abs(current_grade), max_grade);
   }
-  return max_grade;
+  return max_grade / 2;
 }
 
 /* ----------------------------------------------------------------------
@@ -395,9 +395,9 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   if (comm->me == 0)
     utils::logmesg(
         lmp,
-        "Sampling Scheme: Sampling every {} timestep(s) with a selection threshold of {} "
+        "Sampling Scheme: {} mode, sampling every {} timestep(s) with a selection threshold of {} "
         "and break threshold of {}.\n",
-        sampling_frequency, select_threshold, break_threshold);
+        mode_name, sampling_frequency, select_threshold, break_threshold);
 
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
   read_file(mtp_file, arg[0]);
