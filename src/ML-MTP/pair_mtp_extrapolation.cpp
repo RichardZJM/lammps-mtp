@@ -363,10 +363,9 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 void PairMTPExtrapolation::evaluate_grades()
 {
   if (max_grade >= select_threshold && save_configs) write_config();
-  if (max_grade >= break_threshold) {
-    if (comm->me == 0)
-      preselected_file_stream.flush();    // Ensure the writing buffers are flushed before breaking.
-    error->all(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
+  if (max_grade >= break_threshold && comm->me == 0) {
+    preselected_file_stream.flush();    // Ensure the writing buffers are flushed before breaking.
+    error->one(FLERR, "Exceeded Break Threshold: {:.5f}. Terminating simulation.\n", max_grade);
   }
 }
 /* ----------------------------------------------------------------------
