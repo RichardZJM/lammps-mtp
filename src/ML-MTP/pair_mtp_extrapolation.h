@@ -39,12 +39,14 @@ class PairMTPExtrapolation : public PairMTP {
   void read_file(FILE *, char *);                    //Parsing file using LAMMPS utils
   double calculate_extrapolation_grade(double *);    // Grades from candidate vector
   void compile_grades(double *);                     // Collect grades across collective
+  void evaluate_grades();                            // Evaluate grades against the thresholds
+  void write_config();    // Write to a MLIP-3 preselected compatible file.
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 
-  bool untrained_potential = false;
-  bool pool_grades;              // Is configuration mode?
-  int sampling_frequency = 1;    // Sample frequency, default of 1
+  bool save_configs;         // Whether we write configs above the select threshold
+  bool pool_grades;          // Is configuration mode?
+  int sampling_frequency;    // Sample frequency, default of 1
   int steps_since_last_sample = 0;
   double select_threshold;    // Grade threshold for selection
   double break_threshold;     // Grade threshold for termination
@@ -63,6 +65,10 @@ class PairMTPExtrapolation : public PairMTP {
   // Only needed for neigbhourhood mode
   int nbh_count = 0;
   double *nbh_extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
+
+  // Data for writing configs
+  FILE *preselected_file;
+  bigint max_chars_buff = 0;
 };
 
 }    // namespace LAMMPS_NS

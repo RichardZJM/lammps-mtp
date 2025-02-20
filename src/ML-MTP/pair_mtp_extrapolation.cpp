@@ -23,6 +23,7 @@
 #include "atom.h"
 #include "comm.h"
 #include "error.h"
+#include "fmt/format.h"
 #include "force.h"
 #include "memory.h"
 #include "neigh_list.h"
@@ -71,7 +72,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
   // int newton_pair = force->newton_pair; // Newton pair is forced on
 
   int inum = list->inum;             // The number of central atoms (neigbhourhoods)
-  int *ilist = list->ilist;          // List of the central atoms in order
+  int *ilist = list->ilist;          // List of central atom ids
   int *numneigh = list->numneigh;    // List of the number of neighbours for each central atom
   int **firstneigh =
       list->firstneigh;    //List  (head of array) of neighbours for a given central atom
@@ -315,21 +316,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
   }
 
   compile_grades(energy_ders_wrt_coeffs);
-
-  // if (pool_grades) {    // Configuration mode
-  //   MPI_Allreduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM,
-  //                 world);
-  //   if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
-  // } else {    // Neighbourhood mode
-  //   MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
-  // }
-
-  if (comm->me == 0) {
-    if (max_grade >= select_threshold)
-      ;
-    if (max_grade > break_threshold)
-      error->one(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
-  }
+  evaluate_grades();
 }
 
 /* ----------------------------------------------------------------------
@@ -374,23 +361,68 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 }
 
 /* ----------------------------------------------------------------------
+   Evaluate Thresholds
+------------------------------------------------------------------------- */
+void PairMTPExtrapolation::evaluate_grades()
+{
+  if (comm->me == 0) {
+    if (max_grade >= select_threshold && save_configs) write_config();
+    if (max_grade >= break_threshold)
+      error->one(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
+  }
+}
+/* ----------------------------------------------------------------------
+   Write current config to file
+------------------------------------------------------------------------- */
+void PairMTPExtrapolation::write_config()
+{
+  /* ----------------------------------------------------------------------
+  The core of the writing is in the atom data across MPI processes. 
+  We will first preconvert the relevant data into a string/char* 
+  after which we can send it sequentially to rank 0 to write.
+------------------------------------------------------------------------- */
+  const int inum = list->inum;    // The number of central atoms (neigbhourhoods)
+  int *ilist = list->ilist;       // List of atom ids
+  int *type = atom->type;         //atomic types
+  double **x = atom->x;           // atomic positons
+
+  fmt::memory_buffer buf;
+  for (int ii = 0; ii < inum; ii++) {
+    const int i = ilist[ii];
+    const int itype = type[i] - 1;
+    const double xi[3] = {x[i][0], x[i][1], x[i][2]};
+
+    if (!pool_grades) {
+      const double grade = nbh_extrapolation_grades[ii];
+      fmt::format_to(std::back_inserter(buf), "{} {} {:.6f} {:.6f} {:.6f} {}\n", i, itype, xi[0],
+                     xi[1], xi[2], grade);
+    } else
+      fmt::format_to(std::back_inserter(buf), "{} {} {:.6f} {:.6f} {:.6f}\n", i, itype, xi[0],
+                     xi[1], xi[2]);
+  }
+  // auto x = buf.data();
+  // utils::logmesg(lmp, "{}", buf.size());
+}
+
+/* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */
 
 void PairMTPExtrapolation::settings(int narg, char **arg)
 {
-
-  if (narg < 6)
-    error->all(FLERR,
-               "Pair mtp/extrapolation only accepts 6 arguments: {potential_file} "
-               "{extrapolation_mode} {selection_threshold} {break_threshold} "
-               "{sampling_frequency} {output_file}. Currently "
-               "specified: {} arguments!",
-               narg);
-  if (narg > 6)
-    utils::logmesg(lmp,
-                   "Pair mtp/extrapolation only accepts 6 arguments. Ignoring "
-                   "excessive arguments!\n");
+  if (comm->me == 0) {
+    if (narg < 6)
+      error->one(FLERR,
+                 "Pair mtp/extrapolation only accepts 6 arguments: {potential_file} "
+                 "{extrapolation_mode} {selection_threshold} {break_threshold} "
+                 "{sampling_frequency} {output_file}. Currently "
+                 "specified: {} arguments!",
+                 narg);
+    if (narg > 6)
+      utils::logmesg(lmp,
+                     "Pair mtp/extrapolation only accepts 6 arguments. Ignoring "
+                     "excessive arguments!\n");
+  }
 
   std::string mode_name = LAMMPS_NS::utils::lowercase(arg[1]);
   if (mode_name == "neighborhood" || mode_name == "neighbourhood")    //support for british spelling
@@ -406,13 +438,14 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   select_threshold = utils::numeric(FLERR, arg[2], true, lmp);
   break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
   sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
+  save_configs = LAMMPS_NS::utils::lowercase(arg[5]) != "none";
 
   if (comm->me == 0)
-    utils::logmesg(
-        lmp,
-        "Sampling Scheme: {} mode, sampling every {} timestep(s) with a selection threshold of {} "
-        "and break threshold of {}.\n",
-        mode_name, sampling_frequency, select_threshold, break_threshold);
+    utils::logmesg(lmp,
+                   "Sampling Scheme: {} mode, sampling every {} timestep(s) with a selection "
+                   "threshold of {} "
+                   "and break threshold of {}.\n",
+                   mode_name, sampling_frequency, select_threshold, break_threshold);
 
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
   read_file(mtp_file, arg[0]);
@@ -453,7 +486,8 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file, char *file_path)
                      "Untrained potential found. If the potential specified have been previously "
                      "trained, please verify that the MVS version is \"MVS_v1.1\". \n",
                      keyword);
-      untrained_potential = true;
+      std::fill(&active_set[0][0], &active_set[0][0] + num_doubles, 0.0);
+      std::fill(&inverse_active_set[0][0], &inverse_active_set[0][0] + num_doubles, 0.0);
       return;
     }
     tfr.ignore_comments = true;    // Accept comments after reading the version which is a comment

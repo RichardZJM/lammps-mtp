@@ -82,7 +82,7 @@ void PairMTP::compute(int eflag, int vflag)
   // int newton_pair = force->newton_pair; // Newton pair is forced on
 
   int inum = list->inum;             // The number of central atoms (neigbhourhoods)
-  int *ilist = list->ilist;          // List of the central atoms in order
+  int *ilist = list->ilist;          // List of central atom ids
   int *numneigh = list->numneigh;    // List of the number of neighbours for each central atom
   int **firstneigh =
       list->firstneigh;    //List  (head of array) of neighbours for a given central atom
@@ -280,10 +280,13 @@ void PairMTP::compute(int eflag, int vflag)
 
 void PairMTP::settings(int narg, char **arg)
 {
-  if (narg != 1 && comm->me == 0)
-    utils::logmesg(
-        lmp,
-        "Pair MTP only accepts 1 argument, the MTP potential file. Ignoring other arguments!\n");
+  if (comm->me == 0) {
+    if (narg < 1) error->one(FLERR, "Pair mtp only accepts 1 argument, the MTP potential file");
+    if (narg > 1)
+      utils::logmesg(lmp,
+                     "Pair mtp only accepts 1 argument, the MTP potential file. Ignoring excessive "
+                     "arguments!\n");
+  }
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
   read_file(mtp_file);
   fclose(mtp_file);
