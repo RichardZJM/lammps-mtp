@@ -22,6 +22,7 @@
 
 #include "atom.h"
 #include "comm.h"
+#include "domain.h"
 #include "error.h"
 #include "fmt/format.h"
 #include "force.h"
@@ -349,14 +350,10 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
                  world);
     else
       MPI_Reduce(&energy_ders_wrt_coeffs[0], nullptr, coeff_count, MPI_DOUBLE, MPI_SUM, 0, world);
-
     if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
-
+    MPI_Bcast(&max_grade, 1, MPI_DOUBLE, 0, world);
   } else {    // Neighbourhood mode
-    if (comm->me == 0)
-      MPI_Reduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, 0, world);
-    else
-      MPI_Reduce(&max_grade, nullptr, 1, MPI_DOUBLE, MPI_MAX, 0, world);
+    MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
   }
 }
 
@@ -365,10 +362,11 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::evaluate_grades()
 {
-  if (comm->me == 0) {
-    if (max_grade >= select_threshold && save_configs) write_config();
-    if (max_grade >= break_threshold)
-      error->one(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
+  if (max_grade >= select_threshold && save_configs) write_config();
+  if (max_grade >= break_threshold) {
+    if (comm->me == 0)
+      preselected_file_stream.flush();    // Ensure the writing buffers are flushed before breaking.
+    error->all(FLERR, "Exceeded Break Threshold: {}. Terminating simulation.\n", max_grade);
   }
 }
 /* ----------------------------------------------------------------------
@@ -381,27 +379,82 @@ void PairMTPExtrapolation::write_config()
   We will first preconvert the relevant data into a string/char* 
   after which we can send it sequentially to rank 0 to write.
 ------------------------------------------------------------------------- */
-  const int inum = list->inum;    // The number of central atoms (neigbhourhoods)
-  int *ilist = list->ilist;       // List of atom ids
-  int *type = atom->type;         //atomic types
-  double **x = atom->x;           // atomic positons
+  int inum = list->inum;       // The number of central atoms (neigbhourhoods)
+  int *ilist = list->ilist;    // List of atom ids
+  int *type = atom->type;      //atomic types
+  double **x = atom->x;        // atomic positons
+  int index_offset;            // offset to get global indicies
+
+  MPI_Scan(&inum, &index_offset, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+
+  index_offset -= inum;
 
   fmt::memory_buffer buf;
   for (int ii = 0; ii < inum; ii++) {
     const int i = ilist[ii];
     const int itype = type[i] - 1;
     const double xi[3] = {x[i][0], x[i][1], x[i][2]};
+    const int global_i = i + index_offset;
 
     if (!pool_grades) {
       const double grade = nbh_extrapolation_grades[ii];
-      fmt::format_to(std::back_inserter(buf), "{} {} {:.6f} {:.6f} {:.6f} {}\n", i, itype, xi[0],
-                     xi[1], xi[2], grade);
+      fmt::format_to(std::back_inserter(buf), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n", global_i,
+                     itype, xi[0], xi[1], xi[2], grade);
     } else
-      fmt::format_to(std::back_inserter(buf), "{} {} {:.6f} {:.6f} {:.6f}\n", i, itype, xi[0],
-                     xi[1], xi[2]);
+      fmt::format_to(std::back_inserter(buf), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\n", global_i, itype,
+                     xi[0], xi[1], xi[2]);
   }
-  // auto x = buf.data();
-  // utils::logmesg(lmp, "{}", buf.size());
+
+  bigint char_buffer_size = buf.size();
+  bigint max_char_buffer_size;
+  int cum_atom_count = inum;
+
+  // We first communicate the maximum needed buffer size and the cumulative atom count to the writer process (rank 0)
+  MPI_Reduce(&char_buffer_size, &max_char_buffer_size, 1, MPI_LMP_BIGINT, MPI_MAX, 0, world);
+  MPI_Reduce(&inum, &cum_atom_count, 1, MPI_INT, MPI_SUM, 0, world);
+
+  if (comm->nprocs > 1 && comm->me == 0 && max_char_buffer_size > current_char_buffer_size) {
+    memory->grow(char_buffer, max_char_buffer_size, "mtp/extrapolation:preselected_char_buffer");
+    current_char_buffer_size = max_char_buffer_size;
+  }
+
+  // Print header info and proc 1 atomdata
+  if (comm->me == 0) {
+    preselected_file_stream << "BEGIN_CFG" << "\n";
+    preselected_file_stream << "Size" << "\n";
+    preselected_file_stream << cum_atom_count << "\n";
+    preselected_file_stream << "Supercell" << "\n";
+    preselected_file_stream << fmt::format("{:.6f} {:.6f} {:.6f}\n", domain->xprd, 0.0, 0.0);
+    preselected_file_stream << fmt::format("{:.6f} {:.6f} {:.6f}\n", domain->xy, domain->yprd, 0.0);
+    preselected_file_stream << fmt::format("{:.6f} {:.6f} {:.6f}\n", domain->xz, domain->yz,
+                                           domain->zprd);
+    if (!pool_grades)
+      preselected_file_stream
+          << "AtomData:  id type       cartes_x      cartes_y      cartes_z       nbh_grades\n";
+    else
+      preselected_file_stream << "AtomData:  id type       cartes_x      cartes_y      cartes_z\n";
+    preselected_file_stream.write(buf.data(), char_buffer_size);
+  }
+
+  //Now we loop through and send information to proc 1
+  for (int i = 1; i < comm->nprocs; i++) {
+    // First transfer over the size of the data needed
+    if (comm->me != 0) {
+      MPI_Send(&char_buffer_size, 1, MPI_LMP_BIGINT, 0, 0, MPI_COMM_WORLD);
+      MPI_Send(&buf.data()[0], char_buffer_size, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+    }
+
+    if (comm->me == 0) {
+      MPI_Recv(&char_buffer_size, 1, MPI_LMP_BIGINT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+      MPI_Recv(&char_buffer[0], char_buffer_size, MPI_CHAR, i, 0, MPI_COMM_WORLD,
+               MPI_STATUS_IGNORE);
+      preselected_file_stream.write(char_buffer, char_buffer_size);
+    }
+  }
+  if (comm->me == 0) {
+    preselected_file_stream << fmt::format("Feature   MV_grade	{:.6f}\n", max_grade);
+    preselected_file_stream << "END_CFG" << "\n";
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -450,6 +503,8 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
   read_file(mtp_file, arg[0]);
   fclose(mtp_file);
+
+  if (save_configs && comm->me == 0) preselected_file_stream.open(arg[5]);
 }
 
 /* ----------------------------------------------------------------------

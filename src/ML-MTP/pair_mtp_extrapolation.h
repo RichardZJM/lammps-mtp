@@ -25,6 +25,7 @@ PairStyle(mtp/extrapolation,PairMTPExtrapolation);
 #define LMP_PAIR_MTP_EXTRAPOLATION_H
 
 #include "pair_mtp.h"
+#include <fstream>
 
 namespace LAMMPS_NS {
 
@@ -66,9 +67,10 @@ class PairMTPExtrapolation : public PairMTP {
   int nbh_count = 0;
   double *nbh_extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
 
-  // Data for writing configs
-  FILE *preselected_file;
-  bigint max_chars_buff = 0;
+  // Data for compiling configs in a MLIP-3 compatiable format
+  std::ofstream preselected_file_stream;
+  bigint current_char_buffer_size = 0;
+  char *char_buffer = nullptr;
 };
 
 }    // namespace LAMMPS_NS
