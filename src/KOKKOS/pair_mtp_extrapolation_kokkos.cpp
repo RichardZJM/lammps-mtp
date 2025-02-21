@@ -12,10 +12,10 @@
 ------------------------------------------------------------------------- */
 
 //
-// Contributing author, Richard Meng, Queen's University at Kingston, 21.01.24, contact@richardzjm.com
+// Contributing author, Richard Meng, Queen's University at Kingston, 10.02.25, contact@richardzjm.com
 //
 
-#include "pair_mtp_kokkos.h"
+#include "pair_mtp_extrapolation_kokkos.h"
 
 #include "atom_kokkos.h"
 #include "atom_masks.h"
@@ -28,13 +28,13 @@
 #include "neigh_request.h"
 #include "neighbor_kokkos.h"
 
-#include "Kokkos_StdAlgorithms.hpp"
-
 using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */
 
-template <class DeviceType> PairMTPKokkos<DeviceType>::PairMTPKokkos(LAMMPS(*lmp)) : PairMTP(lmp)
+template <class DeviceType>
+PairMTPExtrapolationKokkos<DeviceType>::PairMTPExtrapolationKokkos(LAMMPS(*lmp)) :
+    PairMTPExtrapolation(lmp)
 {
   respa_enable = 0;
 
@@ -49,7 +49,7 @@ template <class DeviceType> PairMTPKokkos<DeviceType>::PairMTPKokkos(LAMMPS(*lmp
 
 /* ---------------------------------------------------------------------- */
 
-template <class DeviceType> PairMTPKokkos<DeviceType>::~PairMTPKokkos()
+template <class DeviceType> PairMTPExtrapolationKokkos<DeviceType>::~PairMTPExtrapolationKokkos()
 {
   if (copymode) return;
 
@@ -61,13 +61,14 @@ template <class DeviceType> PairMTPKokkos<DeviceType>::~PairMTPKokkos()
    init specific to this pair style
 ------------------------------------------------------------------------- */
 
-template <class DeviceType> void PairMTPKokkos<DeviceType>::init_style()
+template <class DeviceType> void PairMTPExtrapolationKokkos<DeviceType>::init_style()
 {
   if (host_flag) {
     if (lmp->kokkos->nthreads > 1)
-      error->all(FLERR, "Pair style mtp/kk can currently only run on a single CPU thread.");
+      error->all(FLERR,
+                 "Pair style mtp/extrapolation/kk can currently only run on a single CPU thread.");
 
-    PairMTP::init_style();
+    PairMTPExtrapolation::init_style();
     return;
   }
 
@@ -80,16 +81,17 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::init_style()
   request->set_kokkos_host(std::is_same_v<DeviceType, LMPHostType> &&
                            !std::is_same_v<DeviceType, LMPDeviceType>);
   request->set_kokkos_device(std::is_same_v<DeviceType, LMPDeviceType>);
-  if (neighflag == FULL) error->all(FLERR, "Must use half neighbor list style with pair mtp/kk.");
+  if (neighflag == FULL)
+    error->all(FLERR, "Must use half neighbor list style with pair mtp/extrapolation/kk.");
 }
 
 /* ----------------------------------------------------------------------
    init for one type pair i,j and corresponding j,i
 ------------------------------------------------------------------------- */
 
-template <class DeviceType> double PairMTPKokkos<DeviceType>::init_one(int i, int j)
+template <class DeviceType> double PairMTPExtrapolationKokkos<DeviceType>::init_one(int i, int j)
 {
-  double cutone = PairMTP::init_one(i, j);
+  double cutone = PairMTPExtrapolation::init_one(i, j);
   //Don't need to do anything with the cutoff because the MTP (and original MLIP package) only uses one cutoff for all species combos.
   return cutone;
 }
@@ -98,51 +100,61 @@ template <class DeviceType> double PairMTPKokkos<DeviceType>::init_one(int i, in
    set coeffs for one or more type pairs
 ------------------------------------------------------------------------- */
 
-template <class DeviceType> void PairMTPKokkos<DeviceType>::coeff(int narg, char **arg)
+template <class DeviceType> void PairMTPExtrapolationKokkos<DeviceType>::coeff(int narg, char **arg)
 {
-  PairMTP::coeff(narg, arg);
+  PairMTPExtrapolation::coeff(narg, arg);
 }
 
 /* ----------------------------------------------------------------------
    global settings
 ------------------------------------------------------------------------- */
 
-template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, char **arg)
+template <class DeviceType>
+void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
 {
   // We may need to process in chunks to deal with memory limitations
   // For now we expect the user to specify the chunk size
 
-  if (narg != 3 || LAMMPS_NS::utils::lowercase(arg[1]) != "chunksize")
+  if (narg != 8 || LAMMPS_NS::utils::lowercase(arg[1]) != "chunksize")
     error->all(FLERR,
-               "Pair mtp/kk requires 3 arguments {{potential_file} \"chunksize\" {chunksize}}.");
+               "Pair mtp/extrapolation only accepts 8 arguments: {potential_file} "
+               "{extrapolation_mode} {selection_threshold} {break_threshold} "
+               "{sampling_frequency} {output_file} \"chunk_size\" {chunk_size}. Currently "
+               "specified: {} arguments!", );
 
-  chunk_size = utils::inumeric(FLERR, arg[2], true, lmp);
+  chunk_size = utils::inumeric(FLERR, arg[8], true, lmp);
 
-  PairMTP ::settings(
-      1, arg);    // This also calls read_file which parses and loads the necessary arrays in host
+  // This also calls read_file which parses and loads the necessary arrays in host
+  PairMTPExtrapolation ::settings(6, arg);
 
   // ---------- Now we move arrays to device ----------
   // First we set up the index lists
-  MemKK::realloc_kokkos(d_alpha_index_basic, "mtp/kk:alpha_index_basic", alpha_index_basic_count,
-                        4);
-  MemKK::realloc_kokkos(d_alpha_index_times, "mtp/kk:alpha_index_times", alpha_index_times_count,
-                        4);
-  MemKK::realloc_kokkos(d_alpha_moment_mapping, "mtp/kk:moment_mapping", alpha_scalar_count);
+  MemKK::realloc_kokkos(d_alpha_index_basic, "mtp/extrapolation/kk:alpha_index_basic",
+                        alpha_index_basic_count, 4);
+  MemKK::realloc_kokkos(d_alpha_index_times, "mtp/extrapolation/kk:alpha_index_times",
+                        alpha_index_times_count, 4);
+  MemKK::realloc_kokkos(d_alpha_moment_mapping, "mtp/extrapolation/kk:moment_mapping",
+                        alpha_scalar_count);
 
   // Setup the learned coefficients
   int radial_coeff_count = species_count * species_count * radial_basis_size * radial_func_count;
-  MemKK::realloc_kokkos(d_radial_basis_coeffs, "mtp/kk:radial_coeffs", radial_coeff_count);
-  MemKK::realloc_kokkos(d_species_coeffs, "mtp/kk:species_coeffs", species_count);
-  MemKK::realloc_kokkos(d_linear_coeffs, "mtp/kk:linear_coeffs", alpha_scalar_count);
+  MemKK::realloc_kokkos(d_radial_basis_coeffs, "mtp/extrapolation/kk:radial_coeffs",
+                        radial_coeff_count);
+  MemKK::realloc_kokkos(d_species_coeffs, "mtp/extrapolation/kk:species_coeffs", species_count);
+  MemKK::realloc_kokkos(d_linear_coeffs, "mtp/extrapolation/kk:linear_coeffs", alpha_scalar_count);
 
-  //Setup the working arrays. It might be preferable for these to be scatter view
-  // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum. We will resize these as needed in compute.
-  MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", 1, 1, alpha_index_basic_count,
-                        3);
-  MemKK::realloc_kokkos(d_within_cutoff, "mtp/kk:within_cutoff", 1, 1);
-  MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk:moment_tensor_vals", 1, alpha_moment_count);
-  MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments, "mtp/kk:nbh_energy_ders_wrt_moments", 1,
+  //Setup the working arrays. It might be preferable for these to be scatter views
+  // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum.
+  //We will resize these as needed in compute.
+  MemKK::realloc_kokkos(d_moment_jacobian, "mtp/extrapolation/kk:moment_jacobian", 1, 1,
+                        alpha_index_basic_count, 3);
+  MemKK::realloc_kokkos(d_radial_jacobian, "mtp/extrapolation/kk:moment_jacobian", 1,
+                        alpha_index_basic_count, species_count, radial_coeff_count_per_pair);
+  MemKK::realloc_kokkos(d_within_cutoff, "mtp/extrapolation/kk:within_cutoff", 1, 1);
+  MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/extrapolation/kk:moment_tensor_vals", 1,
                         alpha_moment_count);
+  MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments,
+                        "mtp/extrapolation/kk:nbh_energy_ders_wrt_moments", 1, alpha_moment_count);
 
   //Declare host arrays
   auto h_alpha_index_basic = Kokkos::create_mirror_view(d_alpha_index_basic);
@@ -174,6 +186,19 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
   Kokkos::deep_copy(d_species_coeffs, h_species_coeffs);
   Kokkos::deep_copy(d_linear_coeffs, h_linear_coeffs);
   // No need to deep copy the working buffers.
+
+  // We also setup the inverse active set  and grades if neighbourhood mode
+  if (!pool_grades) {
+    MemKK::realloc_kokkos(d_inverse_active_set, "mtp/extrapolation/kk:inverse_active_set",
+                          coeff_count, coeff_count);
+    auto h_inverse_active_set = Kokkos::create_mirror_view(d_inverse_active_set);
+    for (int i = 0; i < coeff_count; i++)
+      for (int j = 0; j < coeff_count; j++) h_inverse_active_set(i, j) = h_inverse_active_set[i][j];
+    Kokkos::deep_copy(d_inverse_active_set, h_inverse_active_set);
+
+    MemKK::realloc_kokkos(d_nbh_extrapolation_grades, "mtp/extrapolation/kk:inverse_active_set",
+                          1, );    //We will resize as needed in compute.
+  }
 }
 
 // Finds the maximum number of neighbours in all neigbhourhoods. This enables use to set the size (2nd index) of the jacobian. (Copied from other potentials)
@@ -197,7 +222,8 @@ template <class DeviceType> struct FindMaxNumNeighs {
    This version is a straightforward implementation
    ---------------------------------------------------------------------- */
 
-template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
+template <class DeviceType>
+void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 {
   // If we are running on host we just use the base implementation
   if (host_flag) {
@@ -228,7 +254,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
   copymode = 1;
   int newton_pair = force->newton_pair;
-  if (newton_pair == false) error->all(FLERR, "PairMTPKokkos requires 'newton on'.");
+  if (newton_pair == false) error->all(FLERR, "PairMTPExtrapolationKokkos requires 'newton on'.");
 
   // Now, ensure the atom data is synced
   atomKK->sync(execution_space, X_MASK | F_MASK | TYPE_MASK);
@@ -255,7 +281,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
   //Precalc the max neighs. This is needed to resize the jacobian.
   max_neighs = 0;
-  Kokkos::parallel_reduce("PairMTPKokkos::find_max_neighs", inum,
+  Kokkos::parallel_reduce("PairMTPExtrapolationKokkos::find_max_neighs", inum,
                           FindMaxNumNeighs<DeviceType>(k_list), Kokkos::Max<int>(max_neighs));
 
   // Handling batching
@@ -275,6 +301,10 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
                     alpha_moment_count);
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_energy_ders_wrt_moments, chunk_size,
                     alpha_moment_count);
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_radial_jacobian, chunk_size,
+                    alpha_index_basic_count, species_count, radial_coeff_count_per_pair);
+    if (!pool_grades)
+      Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_extrapolation_grades, chunk_size);
   }
   // Resize the jacobian if max_neighs is too large. Do not initalize; first access is write.
   if ((int) d_moment_jacobian.extent(0) < chunk_size ||
@@ -409,8 +439,9 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
 // Inits the working arrays: jacobian and moment vals to 0. (ders not needed.
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers,
-                                                                  const int &ii, const int &k) const
+KOKKOS_INLINE_FUNCTION void
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers, const int &ii,
+                                                   const int &k) const
 {
   d_moment_tensor_vals(ii, k) = 0;
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
@@ -418,7 +449,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInit
 
 // Calculates the basic alphas
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
+KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
     TagPairMTPComputeAlphaBasic,
     const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type &team)
     const
@@ -518,7 +549,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
-      // I tried atomic adding to shared memory first but a direct atomic add to global memory was faster
 
       // Get the component's derivatives too
       F_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
@@ -556,8 +586,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
 
 // Calculates the non-elementary alpha from the basic alphas
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeAlphaTimes,
-                                                                  const int &ii) const
+KOKKOS_INLINE_FUNCTION void
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPComputeAlphaTimes, const int &ii) const
 {
   // Traverse all edges in the alpha times compute graph
   for (int k = 0; k < alpha_index_times_count; k++) {
@@ -575,15 +605,16 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
 
 // Sets the nbh energy ders as the linear coeffs
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPSetScalarNbhDers,
-                                                                  const int &ii, const int &k) const
+KOKKOS_INLINE_FUNCTION void
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPSetScalarNbhDers, const int &ii,
+                                                   const int &k) const
 {
   d_nbh_energy_ders_wrt_moments(ii, d_alpha_moment_mapping(k)) = d_linear_coeffs(k);
 }
 
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeNbhDers,
-                                                                  const int &ii) const
+KOKKOS_INLINE_FUNCTION void
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPComputeNbhDers, const int &ii) const
 {
   for (int k = alpha_index_times_count - 1; k >= 0; k--) {
     int a0 = d_alpha_index_times(k, 0);
@@ -603,8 +634,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
 template <class DeviceType>
 template <int NEIGHFLAG, int EVFLAG>
 KOKKOS_INLINE_FUNCTION void
-PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
-                                      EV_FLOAT &ev) const
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
+                                                   const int &ii, EV_FLOAT &ev) const
 {
 
   // The f array is duplicated for OpenMP, atomic for GPU, and neither for Serial
@@ -671,8 +702,8 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
 template <class DeviceType>
 template <int NEIGHFLAG, int EVFLAG>
 KOKKOS_INLINE_FUNCTION void
-PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
-                                      const int &ii) const
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
+                                                   const int &ii) const
 {
   EV_FLOAT ev;
   this->template operator()<NEIGHFLAG, EVFLAG>(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>(), ii, ev);
@@ -681,10 +712,9 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
 // =========== Helper Functions (Also used in other Kokkos potentials)===========
 template <class DeviceType>
 template <int NEIGHFLAG>
-KOKKOS_INLINE_FUNCTION void
-PairMTPKokkos<DeviceType>::v_tally_xyz(EV_FLOAT &ev, const int &i, const int &j, const F_FLOAT &fx,
-                                       const F_FLOAT &fy, const F_FLOAT &fz, const F_FLOAT &delx,
-                                       const F_FLOAT &dely, const F_FLOAT &delz) const
+KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::v_tally_xyz(
+    EV_FLOAT &ev, const int &i, const int &j, const F_FLOAT &fx, const F_FLOAT &fy,
+    const F_FLOAT &fz, const F_FLOAT &delx, const F_FLOAT &dely, const F_FLOAT &delz) const
 {
   // The vatom array is duplicated for OpenMP, atomic for GPU, and neither for Serial
 
@@ -726,7 +756,8 @@ PairMTPKokkos<DeviceType>::v_tally_xyz(EV_FLOAT &ev, const int &i, const int &j,
 
 template <class DeviceType>
 template <class TagStyle>
-void PairMTPKokkos<DeviceType>::check_team_size_for(int inum, int &team_size, int vector_length)
+void PairMTPExtrapolationKokkos<DeviceType>::check_team_size_for(int inum, int &team_size,
+                                                                 int vector_length)
 {
   int team_size_max;
 
@@ -738,7 +769,7 @@ void PairMTPKokkos<DeviceType>::check_team_size_for(int inum, int &team_size, in
 
 template <class DeviceType>
 template <typename scratch_type>
-int PairMTPKokkos<DeviceType>::scratch_size_helper(int values_per_team)
+int PairMTPExtrapolationKokkos<DeviceType>::scratch_size_helper(int values_per_team)
 {
   typedef Kokkos::View<scratch_type *, Kokkos::DefaultExecutionSpace::scratch_memory_space,
                        Kokkos::MemoryTraits<Kokkos::Unmanaged>>
@@ -750,8 +781,8 @@ int PairMTPKokkos<DeviceType>::scratch_size_helper(int values_per_team)
 /* ---------------------------------------------------------------------- */
 
 namespace LAMMPS_NS {
-template class PairMTPKokkos<LMPDeviceType>;
+template class PairMTPExtrapolationKokkos<LMPDeviceType>;
 #ifdef LMP_KOKKOS_GPU
-template class PairMTPKokkos<LMPHostType>;
+template class PairMTPExtrapolationKokkos<LMPHostType>;
 #endif
 }    // namespace LAMMPS_NS
