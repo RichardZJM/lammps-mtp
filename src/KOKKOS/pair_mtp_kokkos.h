@@ -143,7 +143,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
   Kokkos::View<bool **, DeviceType> d_within_cutoff;
 
-  // Typedefs for shared memory using templates
+  // Typedefs for shared memory
   typedef Kokkos::View<F_FLOAT **[3], typename DeviceType::scratch_memory_space,
                        Kokkos::MemoryTraits<Kokkos::Unmanaged>>
       shared_double_3d;    // Used for coord powers
