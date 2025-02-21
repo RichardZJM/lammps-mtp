@@ -413,12 +413,9 @@ void PairMTPExtrapolation::write_config()
   MPI_Reduce(&char_buffer_size, &max_char_buffer_size, 1, MPI_LMP_BIGINT, MPI_MAX, 0, world);
   MPI_Reduce(&inum, &cum_atom_count, 1, MPI_INT, MPI_SUM, 0, world);
 
-  if (comm->me == 0 && max_char_buffer_size > current_char_buffer_size) {
-    memory->grow(char_buffer, max_char_buffer_size, "mtp/extrapolation:preselected_char_buffer");
-    current_char_buffer_size = max_char_buffer_size;
-  }
+  if (comm->me == 0 && max_char_buffer_size > buf.capacity()) buf.reserve(max_char_buffer_size);
 
-  // Print header info and proc 1 atomdata
+  // Print header info and proc 0 atomdata
   if (comm->me == 0) {
     preselected_file_stream << "BEGIN_CFG" << "\n";
     preselected_file_stream << "Size" << "\n";
@@ -444,8 +441,8 @@ void PairMTPExtrapolation::write_config()
     for (int i = 1; i < comm->nprocs; i++) {
       //Now we loop through each proc and receive and write on proc 0
       MPI_Recv(&char_buffer_size, 1, MPI_LMP_BIGINT, i, 0, world, MPI_STATUS_IGNORE);
-      MPI_Recv(&char_buffer[0], char_buffer_size, MPI_CHAR, i, 0, world, MPI_STATUS_IGNORE);
-      preselected_file_stream.write(char_buffer, char_buffer_size);
+      MPI_Recv(&buf.data()[0], char_buffer_size, MPI_CHAR, i, 0, world, MPI_STATUS_IGNORE);
+      preselected_file_stream.write(buf.data(), char_buffer_size);
     }
   if (comm->me == 0) {
     preselected_file_stream << fmt::format("Feature   MV_grade	{:.6f}\n", max_grade);
