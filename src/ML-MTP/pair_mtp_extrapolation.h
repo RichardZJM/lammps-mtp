@@ -70,7 +70,8 @@ class PairMTPExtrapolation : public PairMTP {
   // Data for compiling configs in a MLIP-3 compatiable format
   std::ofstream preselected_file_stream;
   bigint current_char_buffer_size = 0;
-  char *char_buffer = nullptr;
+  char *char_buffer = nullptr;    // Write out buffer (only proc 0)
+  fmt::memory_buffer buf;         // Packing buffer
 };
 
 }    // namespace LAMMPS_NS

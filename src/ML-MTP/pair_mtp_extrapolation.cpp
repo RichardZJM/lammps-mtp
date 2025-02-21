@@ -375,7 +375,7 @@ void PairMTPExtrapolation::write_config()
 {
   /* ----------------------------------------------------------------------
   The core of the writing is in the atom data across MPI processes. 
-  We will first preconvert the relevant data into a string/char* 
+  We will first preconvert the relevant data into a string/char array
   after which we can send it sequentially to rank 0 to write.
 ------------------------------------------------------------------------- */
   int inum = list->inum;       // The number of central atoms (neigbhourhoods)
@@ -388,7 +388,8 @@ void PairMTPExtrapolation::write_config()
 
   index_offset -= inum;
 
-  fmt::memory_buffer buf;
+  buf.clear();
+
   for (int ii = 0; ii < inum; ii++) {
     const int i = ilist[ii];
     const int itype = type[i] - 1;
@@ -412,7 +413,7 @@ void PairMTPExtrapolation::write_config()
   MPI_Reduce(&char_buffer_size, &max_char_buffer_size, 1, MPI_LMP_BIGINT, MPI_MAX, 0, world);
   MPI_Reduce(&inum, &cum_atom_count, 1, MPI_INT, MPI_SUM, 0, world);
 
-  if (comm->nprocs > 1 && comm->me == 0 && max_char_buffer_size > current_char_buffer_size) {
+  if (comm->me == 0 && max_char_buffer_size > current_char_buffer_size) {
     memory->grow(char_buffer, max_char_buffer_size, "mtp/extrapolation:preselected_char_buffer");
     current_char_buffer_size = max_char_buffer_size;
   }
@@ -435,21 +436,17 @@ void PairMTPExtrapolation::write_config()
     preselected_file_stream.write(buf.data(), char_buffer_size);
   }
 
-  //Now we loop through and send information to proc 1
-  for (int i = 1; i < comm->nprocs; i++) {
-    // First transfer over the size of the data needed
-    if (comm->me != 0) {
-      MPI_Send(&char_buffer_size, 1, MPI_LMP_BIGINT, 0, 0, MPI_COMM_WORLD);
-      MPI_Send(&buf.data()[0], char_buffer_size, MPI_CHAR, 0, 0, MPI_COMM_WORLD);
-    }
-
-    if (comm->me == 0) {
-      MPI_Recv(&char_buffer_size, 1, MPI_LMP_BIGINT, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-      MPI_Recv(&char_buffer[0], char_buffer_size, MPI_CHAR, i, 0, MPI_COMM_WORLD,
-               MPI_STATUS_IGNORE);
+  // Send information to proc 0
+  if (comm->me != 0) {
+    MPI_Send(&char_buffer_size, 1, MPI_LMP_BIGINT, 0, 0, world);
+    MPI_Send(&buf.data()[0], char_buffer_size, MPI_CHAR, 0, 0, world);
+  } else
+    for (int i = 1; i < comm->nprocs; i++) {
+      //Now we loop through each proc and receive and write on proc 0
+      MPI_Recv(&char_buffer_size, 1, MPI_LMP_BIGINT, i, 0, world, MPI_STATUS_IGNORE);
+      MPI_Recv(&char_buffer[0], char_buffer_size, MPI_CHAR, i, 0, world, MPI_STATUS_IGNORE);
       preselected_file_stream.write(char_buffer, char_buffer_size);
     }
-  }
   if (comm->me == 0) {
     preselected_file_stream << fmt::format("Feature   MV_grade	{:.6f}\n", max_grade);
     preselected_file_stream << "END_CFG" << "\n";
