@@ -148,8 +148,8 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   //We will resize these as needed in compute.
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/extrapolation/kk:moment_jacobian", 1, 1,
                         alpha_index_basic_count, 3);
-  MemKK::realloc_kokkos(d_radial_jacobian, "mtp/extrapolation/kk:moment_jacobian", 1,
-                        alpha_index_basic_count, species_count, radial_coeff_count_per_pair);
+  MemKK::realloc_kokkos(d_radial_jacobian, "mtp/extrapolation/kk:radial_jacobian", 1,
+                        alpha_index_basic_count, radial_coeff_count);
   MemKK::realloc_kokkos(d_within_cutoff, "mtp/extrapolation/kk:within_cutoff", 1, 1);
   MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/extrapolation/kk:moment_tensor_vals", 1,
                         alpha_moment_count);
@@ -228,10 +228,15 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   // If we are running on host we just use the base implementation
   if (host_flag) {
     atomKK->sync(Host, X_MASK | F_MASK | TYPE_MASK);
-    PairMTP::compute(eflag_in, vflag_in);
+    PairMTPExtrapolation::compute(eflag_in, vflag_in);
     atomKK->modified(Host, F_MASK);
     return;
   }
+
+  // Determine if we are doing extrapolation grade this timestep.
+  steps_since_last_sample++;
+  bool calculate_grade_this_step = steps_since_last_sample <= sampling_frequency;
+  if (calculate_grade_this_step) steps_since_last_sample = 0;
 
   eflag = eflag_in;
   vflag = vflag_in;
@@ -302,7 +307,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_energy_ders_wrt_moments, chunk_size,
                     alpha_moment_count);
     Kokkos::realloc(Kokkos::WithoutInitializing, d_radial_jacobian, chunk_size,
-                    alpha_index_basic_count, species_count, radial_coeff_count_per_pair);
+                    alpha_index_basic_count, species_count, radial_coeff_count);
     if (!pool_grades)
       Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_extrapolation_grades, chunk_size);
   }
@@ -329,6 +334,15 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
           policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
       Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
+
+      // Only init data needed for extrapolation on steps it's needed
+      if (calculate_grade_this_step) {
+        typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitRadJacobian>
+            policy_rad_jac_init({0, 0}, {chunk_size, alpha_index_basic_count});
+        Kokkos::parallel_for("InitRadJacobian", policy_rad_jac_init, *this);
+
+        if (pool_grades) Kokkos::Experimental::fill(DeviceType, energy_ders_wrt_coeffs, 0.0);
+      }
     }
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
@@ -336,19 +350,34 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       int team_size = team_size_default;
       if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
-      check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size, team_size, vector_length);
-      int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
-      int dist_coords_scratch_count = 4 * max_alpha_index_basic;
-      int scratch_size = scratch_size_helper<F_FLOAT>(
-          team_size * (radial_scratch_count + dist_coords_scratch_count));
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
-                                                                                     team_size);
-      policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
-      Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
+
+      // Only calculate the radial jacobian on steps extrapolation is needed
+      if (calculate_grade_this_step) {
+        check_team_size_for<TagPairMTPComputeAlphaBasicRad>(chunk_size, team_size, vector_length);
+        int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
+        int dist_coords_scratch_count = 4 * max_alpha_index_basic;
+        int scratch_size = scratch_size_helper<F_FLOAT>(
+            team_size * (radial_scratch_count + dist_coords_scratch_count));
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicRad> policy_basic_alpha_rad(
+            chunk_size, team_size);
+        policy_basic_alpha_rad =
+            policy_basic_alpha_rad.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_for("ComputeAlphaBasicRad", policy_basic_alpha_rad, *this);
+      } else {
+        check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size, team_size, vector_length);
+        int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
+        int dist_coords_scratch_count = 4 * max_alpha_index_basic;
+        int scratch_size = scratch_size_helper<F_FLOAT>(
+            team_size * (radial_scratch_count + dist_coords_scratch_count));
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
+                                                                                       team_size);
+        policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
+      }
     }
 
-    // ========== Calculate the non-elementary alphas (Per neighbourhood parallelizaton ) ==========
-    // This can be parallelized with dependence analysis. Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
+    // ========== Calculate the non-elementary alphas ==========
+    // This can be parallelized with dependence analysis (Cuda Graphs). Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
     {
       typename Kokkos::RangePolicy<DeviceType, TagPairMTPComputeAlphaTimes> policy_times(
           0, chunk_size);
@@ -392,8 +421,16 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
           Kokkos::parallel_for(policy_force, *this);
         }
       }
+      ev += ev_tmp;
     }
-    ev += ev_tmp;
+
+    // ========== Reduce Basis Ders (Configuration mode) / Calculate Extrapolation (Neighbourhood Mode) ==========
+    if (calculate_grade_this_step) {
+      if (pool_grades) {
+      } else {
+      }
+    }
+
     chunk_offset += chunk_size;    // Manage halt condition
   }    // end batching while loop
 
@@ -437,7 +474,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
 // ========== Kernels ==========
 
-// Inits the working arrays: jacobian and moment vals to 0. (ders not needed.
+// Inits the working arrays: moments and ders, moment jacobian not needed.
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void
 PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers, const int &ii,
@@ -445,6 +482,17 @@ PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers,
 {
   d_moment_tensor_vals(ii, k) = 0;
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
+}
+
+// Inits the radial jacobian (only called on steps with extrapolation)
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitRadJacobian, const int &ii,
+                                                   const int &k) const
+{
+  for (int jjtype = 0; jjtype < species_count; jjtype++)
+    for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
+      d_radial_jacobian(ii, k, jjtype, ri) = 0;
 }
 
 // Calculates the basic alphas
@@ -549,6 +597,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
       F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
+      // I tried atomic adding to shared memory first but a direct atomic add to global memory was faster
 
       // Get the component's derivatives too
       F_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
@@ -565,21 +614,134 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
       d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
       d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
       d_moment_jacobian(ii, jj, k, 2) = temp_jac[2];
+    }
+  });
+}
 
-      // This version uses 2 less registers but runs slightly slower
-      // pow *= der / dist;
+// Calculates the basic alphas with radial jacobian
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
+    TagPairMTPComputeAlphaBasicRad,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicRad>::member_type
+        &team) const
+{
+  // Extract the atom number
+  int ii = team.league_rank();
+  if (ii >= chunk_size) return;
 
-      // F_FLOAT temp_jac = pow * r[0];
-      // if (a0 != 0) temp_jac += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      // d_moment_jacobian(ii, jj, k, 0) = temp_jac;
+  // Get information about the central atom
+  const int i = d_ilist[ii + chunk_offset];
+  const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
+  const int itype = type[i] - 1;    // switch to zero indexing
+  const int jnum = d_numneigh(i);
 
-      // temp_jac = pow * r[1];
-      // if (a1 != 0) temp_jac += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      // d_moment_jacobian(ii, jj, k, 1) = temp_jac;
+  // If precomputing everything is too much memory, we can consider calculating dist powers and coord powers on-the-fly with pow.
+  shared_double_2d s_radial_basis_vals(team.team_scratch(0), team.team_size(), radial_basis_size);
+  shared_double_2d s_radial_basis_ders(team.team_scratch(0), team.team_size(), radial_basis_size);
+  shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
+  shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
 
-      // temp_jac = pow * r[2];
-      // if (a2 != 0) temp_jac += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
-      // d_moment_jacobian(ii, jj, k, 2) = temp_jac;
+  // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
+  // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
+
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
+    const int j = d_neighbors(i, jj) & NEIGHMASK;
+    const int jtype = type[j] - 1;    // switch to zero indexing
+    const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
+    const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+
+    const bool valid_pair = rsq < max_cutoff_sq;
+    d_within_cutoff(ii, jj) = valid_pair;
+
+    if (!valid_pair) return;
+    const F_FLOAT dist = sqrt(rsq);
+
+    s_dist_powers(jj, 0) = s_coord_powers(jj, 0, 0) = s_coord_powers(jj, 0, 1) =
+        s_coord_powers(jj, 0, 2) = 1;    // Set the constants
+
+    // Precompute the coord and distance power
+    for (int k = 1; k < max_alpha_index_basic; k++) {
+      s_dist_powers(jj, k) = s_dist_powers(jj, k - 1) * dist;
+      for (int a = 0; a < 3; a++) s_coord_powers(jj, k, a) = s_coord_powers(jj, k - 1, a) * r[a];
+    }
+
+    // ---------- Calculate the radial basis functions ----------
+    // Currently, I just have it hard coded for Rb_Chebyshev. I'll need to implement a way to handle different radial basis sets in kokkos
+
+    // Calculate the radial basis and store in shared memory
+    F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
+    F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
+
+    s_radial_basis_vals(jj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+    for (int k = 2; k < radial_basis_size; k++) {
+      s_radial_basis_vals(jj, k) =
+          2 * ksi * s_radial_basis_vals(jj, k - 1) - s_radial_basis_vals(jj, k - 2);
+    }
+
+    // Do the same with the derivatives
+    s_radial_basis_ders(jj, 0) = scaling * 2 * (dist - max_cutoff);
+    s_radial_basis_ders(jj, 1) = scaling *
+        (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
+    for (int k = 2; k < radial_basis_size; k++) {
+      s_radial_basis_ders(jj, k) =
+          2 * (mult * s_radial_basis_vals(jj, k - 1) + ksi * s_radial_basis_ders(jj, k - 1)) -
+          s_radial_basis_ders(jj, k - 2);
+    }
+
+    //Now, we loop through all the basic alphas
+    for (int k = 0; k < alpha_index_basic_count; k++) {
+
+      F_FLOAT val = 0;
+      F_FLOAT der = 0;
+      int mu = d_alpha_index_basic(k, 0);
+      int a0 = d_alpha_index_basic(k, 1);
+      int a1 = d_alpha_index_basic(k, 2);
+      int a2 = d_alpha_index_basic(k, 3);
+
+      // Normalize by the rank of alpha's coresponding tensor
+      int norm_rank = a0 + a1 + a2;
+      F_FLOAT norm_fac = 1.0 / s_dist_powers(jj, norm_rank);
+
+      F_FLOAT pow0 = s_coord_powers(jj, a0, 0);
+      F_FLOAT pow1 = s_coord_powers(jj, a1, 1);
+      F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
+      F_FLOAT pow = pow0 * pow1 * pow2;
+
+      //Find the offset for the radial basis coeffs
+      int pair_offset = itype * species_count + jtype;
+      int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
+
+      // Find the radial component and its derivative
+      for (int ri = 0; ri < radial_basis_size; ri++) {
+        F_FLOAT rad_val = s_radial_basis_vals(jj, ri);
+        val += d_radial_basis_coeffs(offset + ri) * rad_val;
+        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jj, ri);
+        // It might be preferable to add into shared memory.
+        Kokkos::atomic_add(&radial_jacobian(ii, k, offset + ri), rad_val * norm_fac * pow);
+      }
+
+      val *= norm_fac;
+      der = der * norm_fac - norm_rank * val / dist;
+
+      Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
+      // I tried atomic adding to shared memory first but a direct atomic add to global memory was faster
+
+      // Get the component's derivatives too
+      F_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
+
+      pow *= der / dist;
+      temp_jac[0] = pow * r[0];
+      temp_jac[1] = pow * r[1];
+      temp_jac[2] = pow * r[2];
+
+      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
+      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
+      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+
+      d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
+      d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
+      d_moment_jacobian(ii, jj, k, 2) = temp_jac[2];
     }
   });
 }
@@ -707,6 +869,85 @@ PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHF
 {
   EV_FLOAT ev;
   this->template operator()<NEIGHFLAG, EVFLAG>(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>(), ii, ev);
+}
+
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
+    TagPairMTPReduceEnergyDers,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceEnergyDers>::member_type &team)
+    const
+{
+  /*We need to perform a reduction across all atoms for all energy ders.
+There are three types of ders:
+1. Radial ders
+2. Species Ders
+3. Moment Ders
+Radials are much much more expesive than the others but there is no guarentee that there are enough
+radial ders to saturate the SMs, espeically if only have 1 species. Thus, we will also issue the other reductions
+in the same kernel call. We will target 1 thread block per SM, so 1024 threads per block.
+It is probably  preferable to use different streams.
+*/
+  const kk = team.league_rank();
+
+  if (kk < radial_coeff_count) {
+    //Case 1: Radial coefficients
+    Kokkos::parallel_reduce(
+        Kokkos::TeamThreadRange(team, chunk_size),
+        [=](const int ii, &energy_ders_wrt_coeffs(kk)) {
+          F_FLOAT sum = 0;
+
+          const int i = d_ilist[ii + chunk_offset];
+          const int itype = type[i] - 1;    // switch to zero indexing
+
+          // We only take the deriatives based on the type of the central.
+          // Since the radial array is flattened with the itype first, integer divide
+          // by the width of itype * the coeffs per pair to check
+          if (kk / (species_count * radial_coeff_count_per_pair) == itype) {
+            for (int k = 0; k < alpha_index_basic_count; k++) {
+              sum += d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, kk);
+            }
+          }
+
+          energy_ders_wrt_coeffs(kk) += sum;
+        },
+        Kokkos::Sum<F_FLOAT, DeviceType>(energy_ders_wrt_coeffs(k)));
+  } else if (kk << radial_basis_coeffs + species_count) {
+    //Case 2: Species coefficient
+    Kokkos::parallel_reduce(
+        Kokkos::TeamThreadRange(team, chunk_size),
+        [=](const int ii, &energy_ders_wrt_coeffs(kk)) {
+          const int i = d_ilist[ii + chunk_offset];
+          const int itype = type[i] - 1;    // switch to zero indexing
+          F_FLOAT val = 0.0;
+          if (itype == kk - coeff_count) val = 1.0;
+          energy_ders_wrt_coeffs(kk) += val;
+        },
+        Kokkos::Sum<F_FLOAT, DeviceType>(energy_ders_wrt_coeffs(kk)));
+
+  } else {
+    //Case 3: Basis set
+    Kokkos::parallel_reduce(
+        Kokkos::TeamThreadRange(team, chunk_size),
+        [=](const int ii, &energy_ders_wrt_coeffs(kk)) {
+          energy_ders_wrt_coeffs(kk) += d_moment_tensor_vals(d_alpha_moment_mapping(kk))
+        },
+        Kokkos::Sum<F_FLOAT, DeviceType>(energy_ders_wrt_coeffs(kk)));
+  }
+
+  // Extract the atom number
+  // const int ii = team.league_rank();
+  // if (ii >= chunk_size) return;
+  // const int itype = type[i] - 1;    // switch to zero indexing
+
+  // // Let's first extract the nbh ders and store it in shared memory
+  // shared_double_1d s_nbh_energy_ders =
+  //     (team.team_scratch(0), team.team_size(), alpha_index_basic_count);
+
+  // Copy from global to shared memory using team-parallelism.
+  // Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count),
+  //                      [=](const int k) {
+  //                        s_nbh_energy_ders(k) = d_nbh_energy_ders_wrt_moments(ii)(k);
+  //                      };
 }
 
 // =========== Helper Functions (Also used in other Kokkos potentials)===========

@@ -317,8 +317,8 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
     }
 
-    // ========== Calculate the non-elementary alphas (Per neighbourhood parallelizaton ) ==========
-    // This can be parallelized with dependence analysis. Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
+    // ========== Calculate the non-elementary alphas  ==========
+    // This can be parallelized with dependence analysis (Cuda Graphs). Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
     {
       typename Kokkos::RangePolicy<DeviceType, TagPairMTPComputeAlphaTimes> policy_times(
           0, chunk_size);
@@ -407,7 +407,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
 
 // ========== Kernels ==========
 
-// Inits the working arrays: jacobian and moment vals to 0. (ders not needed.
+// Inits the working arrays: moment and ders, jacobian not needed.
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers,
                                                                   const int &ii, const int &k) const

@@ -35,10 +35,14 @@ namespace LAMMPS_NS {
 
 // Structs for kernels
 struct TagPairMTPInitMomentValsDers {};
+struct TagPairMTPInitRadJacobian {};
 struct TagPairMTPComputeAlphaBasic {};
+struct TagPairMTPComputeAlphaBasicRad {};
 struct TagPairMTPComputeAlphaTimes {};
 struct TagPairMTPSetScalarNbhDers {};
 struct TagPairMTPComputeNbhDers {};
+struct TagPairMTPReduceEnergyDers {};
+
 template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
 template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExtrapolation {
@@ -76,12 +80,22 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPInitMomentValsDers, const int &ii, const int &k) const;
 
+  KOKKOS_INLINE_FUNCTION    // Only runs on steps when we sample extrapolation
+      void
+      operator()(TagPairMTPInitRadJacobian, const int &ii, const int &k) const;
+
   // Kernels for computation
   KOKKOS_INLINE_FUNCTION
   void
   operator()(TagPairMTPComputeAlphaBasic,
              const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type
                  &team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(
+      TagPairMTPComputeAlphaBasicRad,
+      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicRad>::member_type
+          &team) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPComputeAlphaTimes, const int &ii) const;
@@ -101,6 +115,13 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   KOKKOS_INLINE_FUNCTION void
   operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
              EV_FLOAT &) const;    // With global energy reduction as needed
+
+  // Kernels for computation
+  KOKKOS_INLINE_FUNCTION
+  void
+  operator()(TagPairMTPReduceEnergyDers,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceEnergyDers>::member_type
+                 &team) const;
 
  protected:
   int chunk_size,
@@ -141,9 +162,12 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   Kokkos::View<double **, DeviceType> d_inverse_active_set;
   Kokkos::View<double *, DeviceType> d_nbh_extrapolation_grades;
 
+  // Source for candidate vector reduction. Only needed in configuration mode.
+  Kokkos::View<double *, DeviceType> d_energy_ders_wrt_coeffs;
+
   // Global working buffers.
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;
-  Kokkos::View<double ****, DeviceType> d_radial_jacobian;
+  Kokkos::View<double ***, DeviceType> d_radial_jacobian;
   Kokkos::View<double **, DeviceType> d_moment_tensor_vals;
   Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
   Kokkos::View<bool **, DeviceType> d_within_cutoff;
@@ -155,6 +179,9 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   typedef Kokkos::View<F_FLOAT **, typename DeviceType::scratch_memory_space,
                        Kokkos::MemoryTraits<Kokkos::Unmanaged>>
       shared_double_2d;    // Used for radial basis vals, ders, and dist powers
+  typedef Kokkos::View<F_FLOAT *, typename DeviceType::scratch_memory_space,
+                       Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      shared_double_1d;    // Used for storing derivatives
 
   int need_dup;
 

@@ -57,8 +57,9 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 {
   // Simply call the base class compute if we aren't sampling this time step
   steps_since_last_sample++;
-  if (steps_since_last_sample < sampling_frequency) {
+  if (steps_since_last_sample <= sampling_frequency) {
     PairMTP::compute(eflag, vflag);
+    steps_since_last_sample = 0;
     return;
   }
 
@@ -360,8 +361,8 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::evaluate_grades()
 {
-  if (std::isnan(max_grade) || max_grade >= select_threshold && save_configs) write_config();
-  if (std::isnan(max_grade) || max_grade >= break_threshold && comm->me == 0) {
+  if (max_grade >= select_threshold && save_configs) write_config();
+  if (max_grade >= break_threshold && comm->me == 0) {
     preselected_file_stream.flush();    // Ensure the writing buffers are flushed before breaking.
     error->one(FLERR, "Exceeded Break Threshold: {:.5f}. Terminating simulation.\n", max_grade);
   }
