@@ -378,6 +378,9 @@ void PairMTPExtrapolation::write_config()
   We will first preconvert the relevant data into a string/char array
   after which we can send it sequentially to rank 0 to write.
 ------------------------------------------------------------------------- */
+
+  write_buffer.clear();    // Clear the buffer from the last print
+
   int inum = list->inum;       // The number of central atoms (neigbhourhoods)
   int *ilist = list->ilist;    // List of atom ids
   int *type = atom->type;      //atomic types
@@ -385,10 +388,7 @@ void PairMTPExtrapolation::write_config()
   int index_offset;            // offset to get global indicies
 
   MPI_Scan(&inum, &index_offset, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-
   index_offset -= inum;
-
-  buf.clear();
 
   for (int ii = 0; ii < inum; ii++) {
     const int i = ilist[ii];
@@ -398,14 +398,14 @@ void PairMTPExtrapolation::write_config()
 
     if (!pool_grades) {
       const double grade = nbh_extrapolation_grades[ii];
-      fmt::format_to(std::back_inserter(buf), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n", global_i,
-                     itype, xi[0], xi[1], xi[2], grade);
+      fmt::format_to(std::back_inserter(write_buffer), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n",
+                     global_i, itype, xi[0], xi[1], xi[2], grade);
     } else
-      fmt::format_to(std::back_inserter(buf), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\n", global_i, itype,
-                     xi[0], xi[1], xi[2]);
+      fmt::format_to(std::back_inserter(write_buffer), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\n", global_i,
+                     itype, xi[0], xi[1], xi[2]);
   }
 
-  bigint char_buffer_size = buf.size();
+  bigint char_buffer_size = write_buffer.size();
   bigint max_char_buffer_size;
   int cum_atom_count = inum;
 
@@ -413,7 +413,8 @@ void PairMTPExtrapolation::write_config()
   MPI_Reduce(&char_buffer_size, &max_char_buffer_size, 1, MPI_LMP_BIGINT, MPI_MAX, 0, world);
   MPI_Reduce(&inum, &cum_atom_count, 1, MPI_INT, MPI_SUM, 0, world);
 
-  if (comm->me == 0 && max_char_buffer_size > buf.capacity()) buf.reserve(max_char_buffer_size);
+  if (comm->me == 0 && max_char_buffer_size > write_buffer.capacity())
+    write_buffer.reserve(max_char_buffer_size);
 
   // Print header info and proc 0 atomdata
   if (comm->me == 0) {
@@ -430,23 +431,24 @@ void PairMTPExtrapolation::write_config()
           << "AtomData:  id type       cartes_x      cartes_y      cartes_z       nbh_grades\n";
     else
       preselected_file_stream << "AtomData:  id type       cartes_x      cartes_y      cartes_z\n";
-    preselected_file_stream.write(buf.data(), char_buffer_size);
+    preselected_file_stream.write(write_buffer.data(), char_buffer_size);
   }
 
   // Send information to proc 0
   if (comm->me != 0) {
-    MPI_Send(&char_buffer_size, 1, MPI_LMP_BIGINT, 0, 0, world);
-    MPI_Send(&buf.data()[0], char_buffer_size, MPI_CHAR, 0, 0, world);
+    MPI_Send(&write_buffer.data()[0], char_buffer_size, MPI_CHAR, 0, 0, world);
   } else
     for (int i = 1; i < comm->nprocs; i++) {
+      MPI_Status status;
+      int n_chars;
       //Now we loop through each proc and receive and write on proc 0
-      MPI_Recv(&char_buffer_size, 1, MPI_LMP_BIGINT, i, 0, world, MPI_STATUS_IGNORE);
-      MPI_Recv(&buf.data()[0], char_buffer_size, MPI_CHAR, i, 0, world, MPI_STATUS_IGNORE);
-      preselected_file_stream.write(buf.data(), char_buffer_size);
+      MPI_Recv(&write_buffer.data()[0], max_char_buffer_size, MPI_CHAR, i, 0, world, &status);
+      MPI_Get_count(&status, MPI_CHAR, &n_chars);
+      preselected_file_stream.write(write_buffer.data(), n_chars);
     }
   if (comm->me == 0) {
     preselected_file_stream << fmt::format("Feature   MV_grade	{:.6f}\n", max_grade);
-    preselected_file_stream << "END_CFG" << "\n";
+    preselected_file_stream << "END_CFG\n\n";
   }
 }
 
