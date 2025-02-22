@@ -41,7 +41,8 @@ struct TagPairMTPComputeAlphaBasicRad {};
 struct TagPairMTPComputeAlphaTimes {};
 struct TagPairMTPSetScalarNbhDers {};
 struct TagPairMTPComputeNbhDers {};
-struct TagPairMTPReduceEnergyDers {};
+struct TagPairMTPReduceBasisDers {};
+struct TagPairMTPComputeNbhGrades {};
 
 template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
@@ -116,12 +117,18 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>, const int &ii,
              EV_FLOAT &) const;    // With global energy reduction as needed
 
-  // Kernels for computation
+  // Kernels for extrapolation computation
   KOKKOS_INLINE_FUNCTION
   void
-  operator()(TagPairMTPReduceEnergyDers,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceEnergyDers>::member_type
+  operator()(TagPairMTPReduceBasisDers,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceBasisDers>::member_type
                  &team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(
+      TagPairMTPComputeNbhGrades,
+      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades>::member_type &team,
+      F_FLOAT &nbh_max_grade) const;
 
  protected:
   int chunk_size,

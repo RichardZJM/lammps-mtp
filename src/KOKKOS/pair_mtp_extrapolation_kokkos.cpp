@@ -398,6 +398,37 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       Kokkos::parallel_for("ComputeNbhDers", policy_nbh_calc, *this);
     }
 
+    // ========== Reduce Basis Ders (Configuration mode) / Calculate Extrapolation (Neighbourhood Mode) ==========
+    if (calculate_grade_this_step) {
+      if (pool_grades) {    // Configuration mode,
+        // We are reduce across all atoms in the chunk.
+        //Here is quick heurustuc tuned to work okay for most problem sizes and coeff counts.
+        int team_size = 1024;
+        int sizes[5] = [512, 256, 128, 64, 32];
+        for (int i = 0; i < 5; i++) {
+          if (chunk_size <= team_size) break;
+          team_size = sizes[i];
+        }
+        int vector_length = vector_length_default;
+        check_team_size_for<TagPairMTPReduceBasisDers>(chunk_size, team_size, vector_length);
+        int scratch_size = scratch_size_helper<F_FLOAT>(0);
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceBasisDers> policy_reduce_ders(coeff_count,
+                                                                                     team_size);
+        policy_reduce_ders = policy_reduce_ders.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_for("ReduceBasisDers", policy_reduce_ders, *this);
+      } else {    // Neighbourhood mode
+        int team_size = team_size_default;
+        if (!host_flag && alpha_index_basic_count < 32) team_size = 32;
+        int vector_length = vector_length_default;
+        check_team_size_for<TagPairMTPComputeNbhGrades>(chunk_size, team_size, vector_length);
+        int scratch_size = scratch_size_helper<F_FLOAT>(team_size * coeff_count);
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades> policy_calc_grades(coeff_count,
+                                                                                      team_size);
+        policy_calc_grades = policy_calc_grades.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_reduce("ComputeNbhGrades", policy_calc_grades, *this, max_grade);
+      }
+    }
+
     // ========== Compute force (and convolve alphas to get energy if needed) ==========
     {
       if (evflag) {
@@ -422,13 +453,6 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
         }
       }
       ev += ev_tmp;
-    }
-
-    // ========== Reduce Basis Ders (Configuration mode) / Calculate Extrapolation (Neighbourhood Mode) ==========
-    if (calculate_grade_this_step) {
-      if (pool_grades) {
-      } else {
-      }
     }
 
     chunk_offset += chunk_size;    // Manage halt condition
@@ -873,8 +897,8 @@ PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHF
 
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
-    TagPairMTPReduceEnergyDers,
-    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceEnergyDers>::member_type &team)
+    TagPairMTPReduceBasisDers,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceBasisDers>::member_type &team)
     const
 {
   /*We need to perform a reduction across all atoms for all energy ders.
@@ -888,6 +912,8 @@ in the same kernel call. We will target 1 thread block per SM, so 1024 threads p
 It is probably  preferable to use different streams.
 */
   const kk = team.league_rank();
+
+  // MAKE SURE THESE REDUCTIONS DON'T OVERWRITE THE PREVIOUS CHUNK!!!!!
 
   if (kk < radial_coeff_count) {
     //Case 1: Radial coefficients
@@ -948,6 +974,64 @@ It is probably  preferable to use different streams.
   //                      [=](const int k) {
   //                        s_nbh_energy_ders(k) = d_nbh_energy_ders_wrt_moments(ii)(k);
   //                      };
+}
+
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
+    TagPairMTPComputeNbhGrades,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades>::member_type &team,
+    F_FLOAT &nbh_max_grade) const
+{
+  // Extract the atom number
+  int ii = team.league_rank();
+  if (ii >= chunk_size) return;
+
+  const int i = d_ilist[ii + chunk_offset];
+  const int itype = type[i] - 1;    // switch to zero indexing
+
+  // Shared memory to store the candidate vector
+  shared_double_1d s_candidate_vector(team.team_scratch(0), team.team_size(), coeff_count);
+
+  // Initialize the species coeff ders
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, species_count), [=](const int k) {
+    s_candidate_vector(radial_coeff_count + k) = 0.0;
+  });
+
+  // Store the species der
+  s_candidate_vector(radial_coeff_count + itype) = 1;
+
+  // First calculate the radial ders and store into shared memory
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [=](const int k) {
+    for (int jjtype = 0; jjtype < species_count; jjtype++) {
+      int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
+      for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
+        AtomicAdd(&s_candidate_vector(offset + ri),
+                  d_nbh_energy_ders_wrt_moments(k) * d_radial_jacobian(ii, k, offset + ri));
+    }
+  });
+
+  // Load the basis vals into shared memory
+  int moment_offset = radial_coeff_count + species_count;
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_scalar_count), [=](const int k) {
+    s_candidate_vector(moment_offset + k) = d_moment_tensor_vals(d_alpha_moment_mapping(i));
+  });
+
+  // Now we can calculate the extrapolation grade with a parallel reduction
+  F_FLOAT nbh_grade = 0;
+
+  Kokkos::parallel_reduce(
+      Kokkos::TeamThreadRange(team, coeff_count),
+      [=](const int i, &nbh_grade) {
+        double current_grade = 0;
+        for (int j = 0; j < coeff_count; j++) {
+          current_grade += s_candidate_vector(j) * inverse_active_set(i, j);
+        }
+        nbh_grade = Kokkos::Max(nbh_grade, Kokkos::abs(current_grade));
+      },
+      Kokkos::Max<double>(nbh_grade));
+
+  nbh_extrapolation_grades(ii) = nbh_grade;
+  nbh_max_grade = Kokkos::Max(nbh_max_grade, nbh_grade);
 }
 
 // =========== Helper Functions (Also used in other Kokkos potentials)===========
