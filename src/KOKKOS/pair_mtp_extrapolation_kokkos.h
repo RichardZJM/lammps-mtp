@@ -41,8 +41,10 @@ struct TagPairMTPComputeAlphaBasicRad {};
 struct TagPairMTPComputeAlphaTimes {};
 struct TagPairMTPSetScalarNbhDers {};
 struct TagPairMTPComputeNbhDers {};
-struct TagPairMTPReduceBasisDers {};
+struct TagPairMTPReduceCoeffDers {};
+struct TagPairMTPTransferBasisDers {};
 struct TagPairMTPComputeNbhGrades {};
+struct TagPairMTPComputeCfgGrade {};
 
 template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
@@ -120,15 +122,24 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   // Kernels for extrapolation computation
   KOKKOS_INLINE_FUNCTION
   void
-  operator()(TagPairMTPReduceBasisDers,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceBasisDers>::member_type
+  operator()(TagPairMTPReduceCoeffDers,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceCoeffDers>::member_type
                  &team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPTransferBasisDers, const int &kk) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(
       TagPairMTPComputeNbhGrades,
       const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades>::member_type &team,
       F_FLOAT &nbh_max_grade) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(
+      TagPairMTPComputeCfgGrade,
+      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeCfgGrade>::member_type &team,
+      F_FLOAT &cfg_max_grade) const;
 
  protected:
   int chunk_size,
@@ -170,7 +181,9 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   Kokkos::View<double *, DeviceType> d_nbh_extrapolation_grades;
 
   // Source for candidate vector reduction. Only needed in configuration mode.
+  // We need two arrays to account for multiple chunks.
   Kokkos::View<double *, DeviceType> d_energy_ders_wrt_coeffs;
+  Kokkos::View<double *, DeviceType> d_tmp_energy_ders_wrt_coeffs;
 
   // Global working buffers.
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;

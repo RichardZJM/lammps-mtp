@@ -342,6 +342,7 @@ double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vec
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::compile_grades(double *candidate_vector)
 {
+  if (comm->nprocs == 1) return;
   // MPI reduce operations based on selection mode
   if (pool_grades) {    // Configuration mode
     if (comm->me == 0)
