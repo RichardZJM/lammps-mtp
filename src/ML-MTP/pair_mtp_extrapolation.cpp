@@ -57,7 +57,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 {
   // Simply call the base class compute if we aren't sampling this time step
   steps_since_last_sample++;
-  if (steps_since_last_sample <= sampling_frequency) {
+  if (steps_since_last_sample < sampling_frequency) {
     PairMTP::compute(eflag, vflag);
     steps_since_last_sample = 0;
     return;
@@ -310,26 +310,26 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     // Directly calculate extraplation grade for neighbourhood mode
     if (!pool_grades) {
       max_grade = 0;
-      double grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+      double grade = calculate_extrapolation_grade();
       max_grade = std::max(grade, max_grade);
       nbh_extrapolation_grades[ii] = grade;
     }
   }
-  compile_grades(energy_ders_wrt_coeffs);
+  compile_grades();
   evaluate_grades();
 }
 
 /* ----------------------------------------------------------------------
    Extrapolation Calculation Function
 ------------------------------------------------------------------------- */
-double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vector)
+double PairMTPExtrapolation::calculate_extrapolation_grade()
 {
   // This should  use BLAS if possible
   double max_grade = 0;
   for (int i = 0; i < coeff_count; i++) {
     double current_grade = 0;
     for (int j = 0; j < coeff_count; j++) {
-      current_grade += candidate_vector[j] * inverse_active_set[i][j];
+      current_grade += energy_ders_wrt_coeffs[j] * inverse_active_set[i][j];
     }
     max_grade = std::max(std::abs(current_grade), max_grade);
   }
@@ -340,9 +340,8 @@ double PairMTPExtrapolation::calculate_extrapolation_grade(double *candidate_vec
 /* ----------------------------------------------------------------------
    Collective Reduction Operation 
 ------------------------------------------------------------------------- */
-void PairMTPExtrapolation::compile_grades(double *candidate_vector)
+void PairMTPExtrapolation::compile_grades()
 {
-  if (comm->nprocs == 1) return;
   // MPI reduce operations based on selection mode
   if (pool_grades) {    // Configuration mode
     if (comm->me == 0)
@@ -350,7 +349,7 @@ void PairMTPExtrapolation::compile_grades(double *candidate_vector)
                  world);
     else
       MPI_Reduce(&energy_ders_wrt_coeffs[0], nullptr, coeff_count, MPI_DOUBLE, MPI_SUM, 0, world);
-    if (comm->me == 0) max_grade = calculate_extrapolation_grade(energy_ders_wrt_coeffs);
+    if (comm->me == 0) max_grade = calculate_extrapolation_grade();
     MPI_Bcast(&max_grade, 1, MPI_DOUBLE, 0, world);
   } else {    // Neighbourhood mode
     MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
@@ -364,7 +363,8 @@ void PairMTPExtrapolation::evaluate_grades()
 {
   if (max_grade >= select_threshold && save_configs) write_config();
   if (max_grade >= break_threshold && comm->me == 0) {
-    preselected_file_stream.flush();    // Ensure the writing buffers are flushed before breaking.
+    std::fflush(preselected_file);    // Ensure the writing buffers are flushed before breaking.
+    std::fclose(preselected_file);
     error->one(FLERR, "Exceeded Break Threshold: {:.5f}. Terminating simulation.\n", max_grade);
   }
 }
@@ -418,20 +418,22 @@ void PairMTPExtrapolation::write_config()
 
   // Print header info and proc 0 atomdata
   if (comm->me == 0) {
-    preselected_file_stream << "BEGIN_CFG" << "\n";
-    preselected_file_stream << "Size" << "\n";
-    preselected_file_stream << cum_atom_count << "\n";
-    preselected_file_stream << "Supercell" << "\n";
-    preselected_file_stream << fmt::format("{:.6f} {:.6f} {:.6f}\n", domain->xprd, 0.0, 0.0);
-    preselected_file_stream << fmt::format("{:.6f} {:.6f} {:.6f}\n", domain->xy, domain->yprd, 0.0);
-    preselected_file_stream << fmt::format("{:.6f} {:.6f} {:.6f}\n", domain->xz, domain->yz,
-                                           domain->zprd);
+    std::fprintf(preselected_file, "BEGIN_CFG\n");
+    std::fprintf(preselected_file, "Size\n");
+    std::fprintf(preselected_file, "%d\n", cum_atom_count);
+    std::fprintf(preselected_file, "Supercell\n");
+    std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xprd, 0.0, 0.0);
+    std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xy, domain->yprd, 0.0);
+    std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xz, domain->yz, domain->zprd);
     if (!pool_grades)
-      preselected_file_stream
-          << "AtomData:  id type       cartes_x      cartes_y      cartes_z       nbh_grades\n";
+      std::fprintf(
+          preselected_file,
+          "AtomData:  id type       cartes_x      cartes_y      cartes_z       nbh_grades\n");
     else
-      preselected_file_stream << "AtomData:  id type       cartes_x      cartes_y      cartes_z\n";
-    preselected_file_stream.write(write_buffer.data(), char_buffer_size);
+      std::fprintf(preselected_file,
+                   "AtomData:  id type       cartes_x      cartes_y      cartes_z\n");
+
+    std::fwrite(write_buffer.data(), 1, char_buffer_size, preselected_file);
   }
 
   // Send information to proc 0
@@ -444,11 +446,11 @@ void PairMTPExtrapolation::write_config()
       //Now we loop through each proc and receive and write on proc 0
       MPI_Recv(&write_buffer.data()[0], max_char_buffer_size, MPI_CHAR, i, 0, world, &status);
       MPI_Get_count(&status, MPI_CHAR, &n_chars);
-      preselected_file_stream.write(write_buffer.data(), n_chars);
+      std::fwrite(write_buffer.data(), 1, n_chars, preselected_file);
     }
   if (comm->me == 0) {
-    preselected_file_stream << fmt::format("Feature   MV_grade	{:.6f}\n", max_grade);
-    preselected_file_stream << "END_CFG\n\n";
+    std::fprintf(preselected_file, "Feature   MV_grade\t%.6f\n", max_grade);
+    std::fprintf(preselected_file, "END_CFG\n\n");
   }
 }
 
@@ -499,7 +501,7 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   read_file(mtp_file, arg[0]);
   fclose(mtp_file);
 
-  if (save_configs && comm->me == 0) preselected_file_stream.open(arg[5]);
+  if (save_configs && comm->me == 0) preselected_file = std::fopen(arg[5], "w");
 }
 
 /* ----------------------------------------------------------------------

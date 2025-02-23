@@ -37,11 +37,11 @@ class PairMTPExtrapolation : public PairMTP {
   void settings(int, char **) override;    // Reads args from "pair_style"
 
  protected:
-  void read_file(FILE *, char *);                    //Parsing file using LAMMPS utils
-  double calculate_extrapolation_grade(double *);    // Grades from candidate vector
-  void compile_grades(double *);                     // Collect grades across collective
-  void evaluate_grades();                            // Evaluate grades against the thresholds
-  void write_config();    // Write to a MLIP-3 preselected compatible file.
+  void read_file(FILE *, char *);            //Parsing file using LAMMPS utils
+  double calculate_extrapolation_grade();    // Grades from candidate vector
+  void compile_grades();                     // Collect grades across collective
+  void evaluate_grades();                    // Evaluate grades against the thresholds
+  void write_config();                       // Write to a MLIP-3 preselected compatible file.
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 
@@ -68,8 +68,9 @@ class PairMTPExtrapolation : public PairMTP {
   double *nbh_extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
 
   // Data for compiling configs in a MLIP-3 compatible format
-  std::ofstream preselected_file_stream;    // Writing stream
-  fmt::memory_buffer write_buffer;          // Write buffer
+  FILE *preselected_file;             // Write to preselected file
+  fmt::memory_buffer write_buffer;    // Write buffer
+  //DO NOT USE FILE STREAM. THIS CAUSES AN ISSUE WITH KOKKOS! NO COPY CONSTRUCTOR!
 };
 
 }    // namespace LAMMPS_NS
