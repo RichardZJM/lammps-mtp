@@ -203,6 +203,30 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   }
 }
 
+template <class DeviceType> void PairMTPExtrapolationKokkos<DeviceType>::evaluate_grades()
+{
+  if (max_grade >= select_threshold && save_configs) {
+    // Sync atom positions, id, and types to the host
+    atomKK->sync(Host, X_MASK | TYPE_MASK);
+
+    if (!pool_grades) {                          // If nbh mode, copy nbh grades to host
+      if (!pool_grades && nbh_count < inum) {    // Allocate more memory if needed
+        memory->grow(nbh_extrapolation_grades, inum, "nbh_extrapolation_grades");
+        nbh_count = inum;
+      }
+      Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+          h_nbh_extrapolation_grades(nbh_extrapolation_grades, inum);
+      Kokkos::deep_copy(h_nbh_extrapolation_grades, d_nbh_extrapolation_grades);
+    }
+
+    write_config();
+  }
+  if (max_grade >= break_threshold && comm->me == 0) {
+    preselected_file_stream.flush();    // Ensure the writing buffers are flushed before breaking.
+    error->one(FLERR, "Exceeded Break Threshold: {:.5f}. Terminating simulation.\n", max_grade);
+  }
+}
+
 // Finds the maximum number of neighbours in all neigbhourhoods. This enables use to set the size (2nd index) of the jacobian. (Copied from other potentials)
 template <class DeviceType> struct FindMaxNumNeighs {
   typedef DeviceType device_type;
@@ -513,6 +537,8 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     dup_vatom = decltype(dup_vatom)();
   }
 
+  if (!calculate_grade_this_step) return;    // Done for non-extrapolation step
+
   // Now, we need to handle the extrapolation obtained collectivelly across chunks.
   // This will also depend on if we are split across MPI processes.
   if (pool_grades) {            // Configuration mode
@@ -526,11 +552,13 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
           h_energy_ders_wrt_coeffs(energy_ders_wrt_coeffs, coeff_count);
       Kokkos::deep_copy(h_energy_ders_wrt_coeffs, d_energy_ders_wrt_coeffs);
-      PairMTPExtrapolation::compile_grades();
+      PairMTPExtrapolation::compile_grades(energy_ders_wrt_coeffs);
     }
-    PairMTPExtrapolation::evaluate_grades();
   } else {    // Neighbourhood mode
+    if (comm->nprocs > 1) PairMTPExtrapolation::compile_grades(nullptr);
   }
+
+  evaluate_grades();    // Evaluate and write based on max grade
 }
 
 // ========== Kernels ==========

@@ -63,6 +63,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   void coeff(int, char **) override;
   void init_style() override;
   double init_one(int, int) override;
+  void evaluate_grades() override;
 
   // ========== Kokkos kernels ==========
   //Utility routines
@@ -165,7 +166,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   typename AT::t_int_1d_randomread type;
 
   // ---------- Device Arrays  ----------
-  // Alphas indicies
+  // Alphas indeicies
   Kokkos::View<int **, DeviceType> d_alpha_index_basic;      // For constructing the basic alphas.
   Kokkos::View<int **, DeviceType> d_alpha_index_times;      // For combining alphas
   Kokkos::View<int *, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions.
