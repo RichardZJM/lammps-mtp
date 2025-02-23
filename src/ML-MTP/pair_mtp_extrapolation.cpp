@@ -365,6 +365,8 @@ void PairMTPExtrapolation::evaluate_grades()
   if (max_grade >= break_threshold && comm->me == 0) {
     std::fflush(preselected_file);    // Ensure the writing buffers are flushed before breaking.
     std::fclose(preselected_file);
+    delete write_buffer_ptr;
+    write_buffer_ptr = nullptr;
     error->one(FLERR, "Exceeded Break Threshold: {:.5f}. Terminating simulation.\n", max_grade);
   }
 }
@@ -378,8 +380,7 @@ void PairMTPExtrapolation::write_config()
   We will first preconvert the relevant data into a string/char array
   after which we can send it sequentially to rank 0 to write.
 ------------------------------------------------------------------------- */
-
-  write_buffer.clear();    // Clear the buffer from the last print
+  write_buffer_ptr->clear();    // Clear the buffer from the last print
 
   int inum = list->inum;       // The number of central atoms (neigbhourhoods)
   int *ilist = list->ilist;    // List of atom ids
@@ -398,14 +399,15 @@ void PairMTPExtrapolation::write_config()
 
     if (!pool_grades) {
       const double grade = nbh_extrapolation_grades[ii];
-      fmt::format_to(std::back_inserter(write_buffer), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n",
-                     global_i, itype, xi[0], xi[1], xi[2], grade);
+      fmt::format_to(std::back_inserter(*write_buffer_ptr),
+                     "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n", global_i, itype, xi[0], xi[1],
+                     xi[2], grade);
     } else
-      fmt::format_to(std::back_inserter(write_buffer), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\n", global_i,
-                     itype, xi[0], xi[1], xi[2]);
+      fmt::format_to(std::back_inserter(*write_buffer_ptr), "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\n",
+                     global_i, itype, xi[0], xi[1], xi[2]);
   }
 
-  bigint char_buffer_size = write_buffer.size();
+  bigint char_buffer_size = write_buffer_ptr->size();
   bigint max_char_buffer_size;
   int cum_atom_count = inum;
 
@@ -413,8 +415,8 @@ void PairMTPExtrapolation::write_config()
   MPI_Reduce(&char_buffer_size, &max_char_buffer_size, 1, MPI_LMP_BIGINT, MPI_MAX, 0, world);
   MPI_Reduce(&inum, &cum_atom_count, 1, MPI_INT, MPI_SUM, 0, world);
 
-  if (comm->me == 0 && max_char_buffer_size > write_buffer.capacity())
-    write_buffer.reserve(max_char_buffer_size);
+  if (comm->me == 0 && max_char_buffer_size > write_buffer_ptr->capacity())
+    write_buffer_ptr->reserve(max_char_buffer_size);
 
   // Print header info and proc 0 atomdata
   if (comm->me == 0) {
@@ -433,20 +435,20 @@ void PairMTPExtrapolation::write_config()
       std::fprintf(preselected_file,
                    "AtomData:  id type       cartes_x      cartes_y      cartes_z\n");
 
-    std::fwrite(write_buffer.data(), 1, char_buffer_size, preselected_file);
+    std::fwrite(write_buffer_ptr->data(), 1, char_buffer_size, preselected_file);
   }
 
   // Send information to proc 0
   if (comm->me != 0) {
-    MPI_Send(&write_buffer.data()[0], char_buffer_size, MPI_CHAR, 0, 0, world);
+    MPI_Send(&write_buffer_ptr->data()[0], char_buffer_size, MPI_CHAR, 0, 0, world);
   } else
     for (int i = 1; i < comm->nprocs; i++) {
       MPI_Status status;
       int n_chars;
       //Now we loop through each proc and receive and write on proc 0
-      MPI_Recv(&write_buffer.data()[0], max_char_buffer_size, MPI_CHAR, i, 0, world, &status);
+      MPI_Recv(&write_buffer_ptr->data()[0], max_char_buffer_size, MPI_CHAR, i, 0, world, &status);
       MPI_Get_count(&status, MPI_CHAR, &n_chars);
-      std::fwrite(write_buffer.data(), 1, n_chars, preselected_file);
+      std::fwrite(write_buffer_ptr->data(), 1, n_chars, preselected_file);
     }
   if (comm->me == 0) {
     std::fprintf(preselected_file, "Feature   MV_grade\t%.6f\n", max_grade);
@@ -498,16 +500,19 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
                    mode_name, sampling_frequency, select_threshold, break_threshold);
 
   FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
-  read_file(mtp_file, arg[0]);
+  read_file(mtp_file);
   fclose(mtp_file);
 
-  if (save_configs && comm->me == 0) preselected_file = std::fopen(arg[5], "w");
+  if (save_configs && comm->me == 0) {
+    preselected_file = std::fopen(arg[5], "w");
+    write_buffer_ptr = new fmt::memory_buffer();
+  }
 }
 
 /* ----------------------------------------------------------------------
    MTP file parsing helper function. Includes memory allocation. Excludes some radial basis hyperparameters (in radial basis constructor instead).
 ------------------------------------------------------------------------- */
-void PairMTPExtrapolation::read_file(FILE *mtp_file, char *file_path)
+void PairMTPExtrapolation::read_file(FILE *mtp_file)
 {
   PairMTP::read_file(mtp_file);
 

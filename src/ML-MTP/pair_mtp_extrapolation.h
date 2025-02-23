@@ -25,7 +25,6 @@ PairStyle(mtp/extrapolation,PairMTPExtrapolation);
 #define LMP_PAIR_MTP_EXTRAPOLATION_H
 
 #include "pair_mtp.h"
-#include <fstream>
 
 namespace LAMMPS_NS {
 
@@ -37,7 +36,7 @@ class PairMTPExtrapolation : public PairMTP {
   void settings(int, char **) override;    // Reads args from "pair_style"
 
  protected:
-  void read_file(FILE *, char *);            //Parsing file using LAMMPS utils
+  void read_file(FILE *);                    //Parsing file using LAMMPS utils
   double calculate_extrapolation_grade();    // Grades from candidate vector
   void compile_grades();                     // Collect grades across collective
   void evaluate_grades();                    // Evaluate grades against the thresholds
@@ -68,9 +67,8 @@ class PairMTPExtrapolation : public PairMTP {
   double *nbh_extrapolation_grades = nullptr;    // Extrapolation grades of all neighbourhoods
 
   // Data for compiling configs in a MLIP-3 compatible format
-  FILE *preselected_file;             // Write to preselected file
-  fmt::memory_buffer write_buffer;    // Write buffer
-  //DO NOT USE FILE STREAM. THIS CAUSES AN ISSUE WITH KOKKOS! NO COPY CONSTRUCTOR!
+  FILE *preselected_file;                  // Write to preselected file
+  fmt::memory_buffer *write_buffer_ptr;    // Write buffer pointer
 };
 
 }    // namespace LAMMPS_NS

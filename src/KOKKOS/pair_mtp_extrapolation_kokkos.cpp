@@ -197,9 +197,10 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
       for (int j = 0; j < coeff_count; j++) h_inverse_active_set(i, j) = inverse_active_set[i][j];
     Kokkos::deep_copy(d_inverse_active_set, h_inverse_active_set);
 
-    if (!pool_grades)    // In neighbourhood mode only, we need memory to store grades
+    if (!pool_grades) {    // In neighbourhood mode only, we need memory to store grades
       MemKK::realloc_kokkos(d_nbh_extrapolation_grades, "mtp/extrapolation/kk:inverse_active_set",
                             1);    //We will resize as needed in compute.
+    }
   }
 
   if (pool_grades) {
@@ -459,7 +460,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
         if (chunk_offset != 0) {
           typename Kokkos::RangePolicy<DeviceType, TagPairMTPTransferBasisDers> policy_transfer(
               0, coeff_count);
-          Kokkos::parallel_for("ComputeAlphaTimes", policy_transfer, *this);
+          Kokkos::parallel_for("TransferBasisDers", policy_transfer, *this);
         } else {    // It it's the first or only chunk we can just swap pointers instead
           Kokkos::kokkos_swap(d_energy_ders_wrt_coeffs, d_tmp_energy_ders_wrt_coeffs);
         }
@@ -467,13 +468,20 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
         F_FLOAT chunk_max_grade;    // Reduce into a tmp variable
         int team_size = team_size_default;
         if (!host_flag && coeff_count < 32) team_size = 32;
-        int vector_length = vector_length_default;
-        check_team_size_for<TagPairMTPComputeNbhGrades>(chunk_size, team_size, vector_length);
-        int scratch_size = scratch_size_helper<F_FLOAT>(team_size * coeff_count);
-        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades> policy_calc_grades(coeff_count,
-                                                                                      team_size);
-        policy_calc_grades = policy_calc_grades.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
-        Kokkos::parallel_reduce("ComputeNbhGrades", policy_calc_grades, *this, chunk_max_grade);
+
+        int scratch_size = scratch_size_helper<F_FLOAT>(coeff_count);
+        Kokkos::TeamPolicy<DeviceType> policy_calc_grades(coeff_count, team_size);
+        policy_calc_grades.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+
+        Kokkos::parallel_reduce(
+            "ComputeNbhGrades", policy_calc_grades,
+            ComputeNbhGrades<DeviceType>(
+                chunk_size, chunk_offset, d_ilist, type, species_count, radial_coeff_count,
+                alpha_index_basic_count, radial_coeff_count_per_pair, alpha_scalar_count,
+                coeff_count, d_nbh_energy_ders_wrt_moments, d_radial_jacobian, d_moment_tensor_vals,
+                d_alpha_moment_mapping, d_inverse_active_set, d_nbh_extrapolation_grades),
+            Kokkos::Max<F_FLOAT>(chunk_max_grade));
+
         max_grade = Kokkos::max(chunk_max_grade, max_grade);    // Get max over all chunks
       }
     }
@@ -554,14 +562,16 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       // Perform the reduction across the current chunk_size
       int team_size = 128;
       if (!host_flag && coeff_count < 64) team_size = 64;
-      int vector_length = vector_length_default;
-      check_team_size_for<TagPairMTPComputeCfgGrade>(chunk_size, team_size, vector_length);
-      int scratch_size = scratch_size_helper<F_FLOAT>(0);
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeCfgGrade> policy_calc_cfg_grade(coeff_count,
-                                                                                      team_size);
-      policy_calc_cfg_grade =
-          policy_calc_cfg_grade.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
-      Kokkos::parallel_reduce("ReduceBasisDers", policy_calc_cfg_grade, *this, max_grade);
+
+      int scratch_size = scratch_size_helper<F_FLOAT>(coeff_count);
+      Kokkos::TeamPolicy<DeviceType> policy_calc_grades(coeff_count, team_size);
+      policy_calc_grades.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+
+      Kokkos::parallel_reduce(
+          "ComputeCfgGrade", policy_calc_grades,
+          ComputeCfgGrade<DeviceType>(coeff_count, d_energy_ders_wrt_coeffs, d_inverse_active_set),
+          Kokkos::Max<F_FLOAT>(max_grade));
+
     } else {    // Multiple Processes
       // On multiple procs we need to most to host and MPI reduce across ranks
       Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
@@ -1002,7 +1012,7 @@ It is probably  preferable to use different streams.
     //Case 1: Radial coefficients
     Kokkos::parallel_reduce(
         Kokkos::TeamThreadRange(team, chunk_size),
-        [=](const int ii, F_FLOAT &sum) {
+        [&](const int ii, F_FLOAT &sum) {
           F_FLOAT partial_sum = 0;
 
           const int i = d_ilist[ii + chunk_offset];
@@ -1024,7 +1034,7 @@ It is probably  preferable to use different streams.
     //Case 2: Species coefficient
     Kokkos::parallel_reduce(
         Kokkos::TeamThreadRange(team, chunk_size),
-        [=](const int ii, F_FLOAT &sum) {
+        [&](const int ii, F_FLOAT &sum) {
           const int i = d_ilist[ii + chunk_offset];
           const int itype = type[i] - 1;    // switch to zero indexing
           F_FLOAT val = 0.0;
@@ -1037,7 +1047,7 @@ It is probably  preferable to use different streams.
     //Case 3: Basis set
     Kokkos::parallel_reduce(
         Kokkos::TeamThreadRange(team, chunk_size),
-        [=](const int ii, F_FLOAT &sum) {
+        [&](const int ii, F_FLOAT &sum) {
           sum += d_moment_tensor_vals(ii, d_alpha_moment_mapping(kk));
         },
         Kokkos::Sum<F_FLOAT>(d_tmp_energy_ders_wrt_coeffs(kk)));
@@ -1052,25 +1062,22 @@ PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPTransferBasisDers, 
   d_energy_ders_wrt_coeffs(kk) += d_tmp_energy_ders_wrt_coeffs(kk);
 }
 
-// Computes the extrapolation grades for each nbh
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
-    TagPairMTPComputeNbhGrades,
-    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades>::member_type &team,
-    F_FLOAT &nbh_max_grade) const
+KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
+    const typename Kokkos::TeamPolicy<DeviceType>::member_type &team, F_FLOAT &nbh_max_grade) const
 {
   // Extract the atom number
   int ii = team.league_rank();
   if (ii >= chunk_size) return;
 
-  const int i = d_ilist[ii + chunk_offset];
-  const int itype = type[i] - 1;    // switch to zero indexing
+  const int i = d_ilist(ii + chunk_offset);
+  const int itype = type(i) - 1;    // switch to zero indexing
 
   // Shared memory to store the candidate vector
   shared_double_1d s_candidate_vector(team.team_scratch(0), team.team_size(), coeff_count);
 
   // Initialize the species coeff ders
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, species_count), [=](const int k) {
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, species_count), [&](const int k) {
     s_candidate_vector(radial_coeff_count + k) = 0.0;
   });
 
@@ -1078,7 +1085,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
   s_candidate_vector(radial_coeff_count + itype) = 1;
 
   // First calculate the radial ders and store into shared memory
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [=](const int k) {
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [&](const int k) {
     for (int jjtype = 0; jjtype < species_count; jjtype++) {
       int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
       for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
@@ -1090,7 +1097,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
 
   // Load the basis vals into shared memory
   int moment_offset = radial_coeff_count + species_count;
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_scalar_count), [=](const int k) {
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_scalar_count), [&](const int k) {
     s_candidate_vector(moment_offset + k) = d_moment_tensor_vals(ii, d_alpha_moment_mapping(k));
   });
 
@@ -1099,7 +1106,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
 
   Kokkos::parallel_reduce(
       Kokkos::TeamThreadRange(team, coeff_count),
-      [=](const int i, F_FLOAT &grade) {
+      [&](const int i, F_FLOAT &grade) {
         F_FLOAT current_grade = 0;
         for (int j = 0; j < coeff_count; j++) {
           current_grade += s_candidate_vector(j) * d_inverse_active_set(i, j);
@@ -1114,10 +1121,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
 }
 
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
-    TagPairMTPComputeCfgGrade,
-    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeCfgGrade>::member_type &team,
-    F_FLOAT &cfg_max_grade) const
+KOKKOS_INLINE_FUNCTION void ComputeCfgGrade<DeviceType>::operator()(
+    const typename Kokkos::TeamPolicy<DeviceType>::member_type &team, F_FLOAT &cfg_max_grade) const
 {
   // Extract row number
   int ik = team.league_rank();
@@ -1126,13 +1131,95 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
   F_FLOAT candidate_grade;
   Kokkos::parallel_reduce(
       Kokkos::TeamThreadRange(team, coeff_count),
-      [=](const int jk, F_FLOAT &grade) {
+      [&](const int jk, F_FLOAT &grade) {
         grade += d_energy_ders_wrt_coeffs(jk) * d_inverse_active_set(ik, jk);
       },
       Kokkos::Sum<F_FLOAT, DeviceType>(candidate_grade));
   candidate_grade = Kokkos::abs(candidate_grade);
   cfg_max_grade = (candidate_grade < cfg_max_grade) ? cfg_max_grade : candidate_grade;
 }
+
+// Computes the extrapolation grades for each nbh
+// template <class DeviceType>
+// KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
+//     TagPairMTPComputeNbhGrades,
+//     const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades>::member_type &team,
+//     F_FLOAT &nbh_max_grade) const
+// {
+//   // Extract the atom number
+//   int ii = team.league_rank();
+//   if (ii >= chunk_size) return;
+
+//   const int i = d_ilist[ii + chunk_offset];
+//   const int itype = type[i] - 1;    // switch to zero indexing
+
+//   // Shared memory to store the candidate vector
+//   shared_double_1d s_candidate_vector(team.team_scratch(0), team.team_size(), coeff_count);
+
+//   // Initialize the species coeff ders
+//   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, species_count), [=](const int k) {
+//     s_candidate_vector(radial_coeff_count + k) = 0.0;
+//   });
+
+//   // Store the species der
+//   s_candidate_vector(radial_coeff_count + itype) = 1;
+
+//   // First calculate the radial ders and store into shared memory
+//   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [=](const int k) {
+//     for (int jjtype = 0; jjtype < species_count; jjtype++) {
+//       int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
+//       for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
+//         Kokkos::atomic_add(&s_candidate_vector(offset + ri),
+//                            d_nbh_energy_ders_wrt_moments(ii, k) *
+//                                d_radial_jacobian(ii, k, offset + ri));
+//     }
+//   });
+
+//   // Load the basis vals into shared memory
+//   int moment_offset = radial_coeff_count + species_count;
+//   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_scalar_count), [=](const int k) {
+//     s_candidate_vector(moment_offset + k) = d_moment_tensor_vals(ii, d_alpha_moment_mapping(k));
+//   });
+
+//   // Now we can calculate the extrapolation grade with a parallel reduction
+//   F_FLOAT nbh_grade;
+
+//   Kokkos::parallel_reduce(
+//       Kokkos::TeamThreadRange(team, coeff_count),
+//       [&](const int i, F_FLOAT &grade) {
+//         F_FLOAT current_grade = 0;
+//         for (int j = 0; j < coeff_count; j++) {
+//           current_grade += s_candidate_vector(j) * d_inverse_active_set(i, j);
+//         }
+//         current_grade = Kokkos::abs(current_grade);
+//         grade = (grade < current_grade) ? current_grade : grade;
+//       },
+//       Kokkos::Max<F_FLOAT, DeviceType>(nbh_grade));
+
+//   d_nbh_extrapolation_grades(ii + chunk_offset) = nbh_grade;
+//   nbh_max_grade = (nbh_grade < nbh_max_grade) ? nbh_max_grade : nbh_grade;
+// }
+
+// template <class DeviceType>
+// KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
+//     TagPairMTPComputeCfgGrade,
+//     const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeCfgGrade>::member_type &team,
+//     F_FLOAT &cfg_max_grade) const
+// {
+//   // Extract row number
+//   int ik = team.league_rank();
+
+//   // Now we can calculate the swap grade of this row with a parallel reduction
+//   F_FLOAT candidate_grade;
+//   Kokkos::parallel_reduce(
+//       Kokkos::TeamThreadRange(team, coeff_count),
+//       [&](const int jk, F_FLOAT &grade) {
+//         grade += d_energy_ders_wrt_coeffs(jk) * d_inverse_active_set(ik, jk);
+//       },
+//       Kokkos::Sum<F_FLOAT, DeviceType>(candidate_grade));
+//   candidate_grade = Kokkos::abs(candidate_grade);
+//   cfg_max_grade = (candidate_grade < cfg_max_grade) ? cfg_max_grade : candidate_grade;
+// }
 
 // =========== Helper Functions (Also used in other Kokkos potentials)===========
 template <class DeviceType>
@@ -1193,6 +1280,16 @@ void PairMTPExtrapolationKokkos<DeviceType>::check_team_size_for(int inum, int &
 }
 
 template <class DeviceType>
+template <class TagStyle>
+void PairMTPExtrapolationKokkos<DeviceType>::check_team_size_for_reduce(int inum, int &team_size,
+                                                                        int vector_length)
+{
+  int team_size_max = Kokkos::TeamPolicy<DeviceType, TagStyle>(inum, Kokkos::AUTO)
+                          .team_size_max(*this, Kokkos::ParallelReduceTag());
+  if (team_size * vector_length > team_size_max) team_size = team_size_max / vector_length;
+}
+
+template <class DeviceType>
 template <typename scratch_type>
 int PairMTPExtrapolationKokkos<DeviceType>::scratch_size_helper(int values_per_team)
 {
@@ -1207,7 +1304,9 @@ int PairMTPExtrapolationKokkos<DeviceType>::scratch_size_helper(int values_per_t
 
 namespace LAMMPS_NS {
 template class PairMTPExtrapolationKokkos<LMPDeviceType>;
+template class ComputeNbhGrades<LMPDeviceType>;
 #ifdef LMP_KOKKOS_GPU
 template class PairMTPExtrapolationKokkos<LMPHostType>;
+template class ComputeNbhGrades<LMPHostType>;
 #endif
 }    // namespace LAMMPS_NS

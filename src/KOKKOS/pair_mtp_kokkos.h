@@ -70,7 +70,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
                                           const F_FLOAT &delx, const F_FLOAT &dely,
                                           const F_FLOAT &delz) const;
 
-  // ---------- MTP routines (inorder of execution) ----------
+  // ---------- MTP routines (in order of execution) ----------
 
   //Kernels for initing working views
   KOKKOS_INLINE_FUNCTION
@@ -132,10 +132,9 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<int *, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions.
 
   // The learned coefficients.
-  Kokkos::View<double *, DeviceType>
-      d_radial_basis_coeffs;    // The radial components. These specifically might benefiti from RandomAccess Trait
-  Kokkos::View<double *, DeviceType> d_species_coeffs;    // The species-based constants
-  Kokkos::View<double *, DeviceType> d_linear_coeffs;     // Basis coeffs
+  Kokkos::View<double *, DeviceType> d_radial_basis_coeffs;    // The radial components.
+  Kokkos::View<double *, DeviceType> d_species_coeffs;         // The species-based constants
+  Kokkos::View<double *, DeviceType> d_linear_coeffs;          // Basis coeffs
 
   // Global working buffers.
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;
