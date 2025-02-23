@@ -28,8 +28,6 @@
 #include "neigh_request.h"
 #include "neighbor_kokkos.h"
 
-#include "Kokkos_StdAlgorithms.hpp"
-
 using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */

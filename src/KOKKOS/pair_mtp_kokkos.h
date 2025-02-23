@@ -33,16 +33,16 @@ PairStyle(mtp/kk/host,PairMTPKokkos<LMPHostType>);
 
 namespace LAMMPS_NS {
 
-// Structs for kernels
-struct TagPairMTPInitMomentValsDers {};
-struct TagPairMTPComputeAlphaBasic {};
-struct TagPairMTPComputeAlphaTimes {};
-struct TagPairMTPSetScalarNbhDers {};
-struct TagPairMTPComputeNbhDers {};
-template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
-
 template <class DeviceType> class PairMTPKokkos : public PairMTP {
  public:
+  // Structs for kernels
+  struct TagPairMTPInitMomentValsDers {};
+  struct TagPairMTPComputeAlphaBasic {};
+  struct TagPairMTPComputeAlphaTimes {};
+  struct TagPairMTPSetScalarNbhDers {};
+  struct TagPairMTPComputeNbhDers {};
+  template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
+
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
   enum { COUL_FLAG = 0 };
   typedef DeviceType device_type;

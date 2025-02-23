@@ -33,23 +33,22 @@ PairStyle(mtp/extrapolation/kk/host,PairMTPExtrapolationKokkos<LMPHostType>);
 
 namespace LAMMPS_NS {
 
-// Structs for kernels
-struct TagPairMTPInitMomentValsDers {};
-struct TagPairMTPInitRadJacobian {};
-struct TagPairMTPComputeAlphaBasic {};
-struct TagPairMTPComputeAlphaBasicRad {};
-struct TagPairMTPComputeAlphaTimes {};
-struct TagPairMTPSetScalarNbhDers {};
-struct TagPairMTPComputeNbhDers {};
-struct TagPairMTPReduceCoeffDers {};
-struct TagPairMTPTransferBasisDers {};
-struct TagPairMTPComputeNbhGrades {};
-struct TagPairMTPComputeCfgGrade {};
-
-template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
-
 template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExtrapolation {
  public:
+  // Structs for kernels
+  struct TagPairMTPInitMomentValsDers {};
+  struct TagPairMTPInitRadJacobian {};
+  struct TagPairMTPComputeAlphaBasic {};
+  struct TagPairMTPComputeAlphaBasicRad {};
+  struct TagPairMTPComputeAlphaTimes {};
+  struct TagPairMTPSetScalarNbhDers {};
+  struct TagPairMTPComputeNbhDers {};
+  struct TagPairMTPReduceCoeffDers {};
+  struct TagPairMTPTransferBasisDers {};
+  struct TagPairMTPComputeNbhGrades {};
+  struct TagPairMTPComputeCfgGrade {};
+  template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
+
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
   enum { COUL_FLAG = 0 };
   typedef DeviceType device_type;
@@ -57,13 +56,13 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   typedef EV_FLOAT value_type;
 
   PairMTPExtrapolationKokkos(class LAMMPS *);
-  ~PairMTPExtrapolationKokkos() override;
+  ~PairMTPExtrapolationKokkos();
   void compute(int, int) override;
   void settings(int, char **) override;
   void coeff(int, char **) override;
   void init_style() override;
   double init_one(int, int) override;
-  void evaluate_grades() override;
+  void evaluate_grades();
 
   // ========== Kokkos kernels ==========
   //Utility routines
@@ -166,7 +165,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   typename AT::t_int_1d_randomread type;
 
   // ---------- Device Arrays  ----------
-  // Alphas indeicies
+  // Alphas indicies
   Kokkos::View<int **, DeviceType> d_alpha_index_basic;      // For constructing the basic alphas.
   Kokkos::View<int **, DeviceType> d_alpha_index_times;      // For combining alphas
   Kokkos::View<int *, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions.
