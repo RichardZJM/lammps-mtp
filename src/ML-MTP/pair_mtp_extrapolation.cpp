@@ -589,4 +589,5 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
   //Broadcast active set to others
   MPI_Bcast(&active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
   MPI_Bcast(&inverse_active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
+  allocated = 1;
 }

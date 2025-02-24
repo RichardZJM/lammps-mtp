@@ -56,7 +56,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   typedef EV_FLOAT value_type;
 
   PairMTPExtrapolationKokkos(class LAMMPS *);
-  ~PairMTPExtrapolationKokkos();
+  ~PairMTPExtrapolationKokkos() override;
   void compute(int, int) override;
   void settings(int, char **) override;
   void coeff(int, char **) override;

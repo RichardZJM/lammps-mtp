@@ -31,7 +31,7 @@ namespace LAMMPS_NS {
 class PairMTPExtrapolation : public PairMTP {
  public:
   PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp) {};
-  ~PairMTPExtrapolation();
+  ~PairMTPExtrapolation() override;
   void compute(int, int) override;         //Workhorse comuptation
   void settings(int, char **) override;    // Reads args from "pair_style"
 
@@ -69,6 +69,7 @@ class PairMTPExtrapolation : public PairMTP {
   // Data for compiling configs in a MLIP-3 compatible format
   FILE *preselected_file;                  // Write to preselected file
   fmt::memory_buffer *write_buffer_ptr;    // Write buffer pointer
+  int allocated = 0;
 };
 
 }    // namespace LAMMPS_NS

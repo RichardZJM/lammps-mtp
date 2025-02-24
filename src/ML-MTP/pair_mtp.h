@@ -32,7 +32,7 @@ namespace LAMMPS_NS {
 class PairMTP : public Pair {
  public:
   PairMTP(class LAMMPS *);
-  ~PairMTP();
+  ~PairMTP() override;
   void compute(int, int) override;         //Workhorse comuptation
   void settings(int, char **) override;    // Reads args from "pair_style"
   void coeff(int, char **) override;       // Reads args from "pair_coeff" (only * * for mtp)
