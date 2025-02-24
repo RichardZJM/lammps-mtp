@@ -213,6 +213,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     // Calculate the energies only if needed. We always need the basis member for extrapolation.
     int linear_basis_offset = radial_coeff_count + species_count;
     if (eflag_either) {
+      nbh_energy = species_coeffs[itype];    // Essentially the reference point energy per species
       for (int k = 0; k < alpha_scalar_count; k++) {
         double basis_member = moment_tensor_vals[alpha_moment_mapping[k]];
         energy_ders_wrt_coeffs[linear_basis_offset + k] += basis_member;
@@ -227,7 +228,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
             moment_tensor_vals[alpha_moment_mapping[k]];
 
     // ------------ Also add the species coefficient ------------
-    energy_ders_wrt_coeffs[radial_coeff_count + itype] += 1;    //species_coeffs[itype];
+    energy_ders_wrt_coeffs[radial_coeff_count + itype] += 1;
 
     // =========== Begin Backpropogation ===========
 
