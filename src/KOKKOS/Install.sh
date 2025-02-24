@@ -1,7 +1,7 @@
 # Install/unInstall package files in LAMMPS
 # mode = 0/1/2 for uninstall/install/update
 
-mode=$1
+mode=2
 
 # enforce using portable C locale
 LC_ALL=C

@@ -436,6 +436,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
   shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
 
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
+    const int jjj = team.team_rank();
     const int j = d_neighbors(i, jj) & NEIGHMASK;
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
@@ -447,13 +448,13 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     if (!valid_pair) return;
     const F_FLOAT dist = sqrt(rsq);
 
-    s_dist_powers(jj, 0) = s_coord_powers(jj, 0, 0) = s_coord_powers(jj, 0, 1) =
-        s_coord_powers(jj, 0, 2) = 1;    // Set the constants
+    s_dist_powers(jjj, 0) = s_coord_powers(jjj, 0, 0) = s_coord_powers(jjj, 0, 1) =
+        s_coord_powers(jjj, 0, 2) = 1;    // Set the constants
 
     // Precompute the coord and distance power
     for (int k = 1; k < max_alpha_index_basic; k++) {
-      s_dist_powers(jj, k) = s_dist_powers(jj, k - 1) * dist;
-      for (int a = 0; a < 3; a++) s_coord_powers(jj, k, a) = s_coord_powers(jj, k - 1, a) * r[a];
+      s_dist_powers(jjj, k) = s_dist_powers(jjj, k - 1) * dist;
+      for (int a = 0; a < 3; a++) s_coord_powers(jjj, k, a) = s_coord_powers(jjj, k - 1, a) * r[a];
     }
 
     // ---------- Calculate the radial basis functions ----------
@@ -463,21 +464,21 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
     F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
-    s_radial_basis_vals(jj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
-    s_radial_basis_vals(jj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jjj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jjj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_vals(jj, k) =
-          2 * ksi * s_radial_basis_vals(jj, k - 1) - s_radial_basis_vals(jj, k - 2);
+      s_radial_basis_vals(jjj, k) =
+          2 * ksi * s_radial_basis_vals(jjj, k - 1) - s_radial_basis_vals(jjj, k - 2);
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(jj, 0) = scaling * 2 * (dist - max_cutoff);
-    s_radial_basis_ders(jj, 1) = scaling *
+    s_radial_basis_ders(jjj, 0) = scaling * 2 * (dist - max_cutoff);
+    s_radial_basis_ders(jjj, 1) = scaling *
         (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_ders(jj, k) =
-          2 * (mult * s_radial_basis_vals(jj, k - 1) + ksi * s_radial_basis_ders(jj, k - 1)) -
-          s_radial_basis_ders(jj, k - 2);
+      s_radial_basis_ders(jjj, k) =
+          2 * (mult * s_radial_basis_vals(jjj, k - 1) + ksi * s_radial_basis_ders(jjj, k - 1)) -
+          s_radial_basis_ders(jjj, k - 2);
     }
 
     //Now, we loop through all the basic alphas
@@ -496,19 +497,19 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
 
       // Find the radial component and its derivative
       for (int ri = 0; ri < radial_basis_size; ri++) {
-        val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(jj, ri);
-        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jj, ri);
+        val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(jjj, ri);
+        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jjj, ri);
       }
 
       // Normalize by the rank of alpha's coresponding tensor
       int norm_rank = a0 + a1 + a2;
-      F_FLOAT norm_fac = 1.0 / s_dist_powers(jj, norm_rank);
+      F_FLOAT norm_fac = 1.0 / s_dist_powers(jjj, norm_rank);
       val *= norm_fac;
       der = der * norm_fac - norm_rank * val / dist;
 
-      F_FLOAT pow0 = s_coord_powers(jj, a0, 0);
-      F_FLOAT pow1 = s_coord_powers(jj, a1, 1);
-      F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
+      F_FLOAT pow0 = s_coord_powers(jjj, a0, 0);
+      F_FLOAT pow1 = s_coord_powers(jjj, a1, 1);
+      F_FLOAT pow2 = s_coord_powers(jjj, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
       // I tried atomic adding to shared memory first but a direct atomic add to global memory was faster
@@ -521,28 +522,13 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       temp_jac[1] = pow * r[1];
       temp_jac[2] = pow * r[2];
 
-      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jjj, a0 - 1, 0) * pow1 * pow2;
+      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jjj, a1 - 1, 1) * pow2;
+      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jjj, a2 - 1, 2);
 
       d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
       d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
       d_moment_jacobian(ii, jj, k, 2) = temp_jac[2];
-
-      // This version uses 2 less registers but runs slightly slower
-      // pow *= der / dist;
-
-      // F_FLOAT temp_jac = pow * r[0];
-      // if (a0 != 0) temp_jac += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      // d_moment_jacobian(ii, jj, k, 0) = temp_jac;
-
-      // temp_jac = pow * r[1];
-      // if (a1 != 0) temp_jac += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      // d_moment_jacobian(ii, jj, k, 1) = temp_jac;
-
-      // temp_jac = pow * r[2];
-      // if (a2 != 0) temp_jac += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
-      // d_moment_jacobian(ii, jj, k, 2) = temp_jac;
     }
   });
 }
