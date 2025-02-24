@@ -28,6 +28,8 @@
 #include "neigh_request.h"
 #include "neighbor_kokkos.h"
 
+#include <csignal>
+
 using namespace LAMMPS_NS;
 
 /* ---------------------------------------------------------------------- */
@@ -115,17 +117,21 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   // We may need to process in chunks to deal with memory limitations
   // For now we expect the user to specify the chunk size
 
-  if (narg != 8 || LAMMPS_NS::utils::lowercase(arg[1]) != "chunksize")
+  if (narg != 8)
     error->all(FLERR,
-               "Pair mtp/extrapolation only accepts 8 arguments: {potential_file} "
+               "Pair mtp/extrapolation requires 8 arguments: {potential_file} "
                "{extrapolation_mode} {selection_threshold} {break_threshold} "
-               "{sampling_frequency} {output_file} \"chunk_size\" {chunk_size}. Currently "
-               "specified: {} arguments!");
+               "{sampling_frequency} {output_file} \"chunk_size\" {chunksize}. Currently "
+               "specified: {} arguments!",
+               narg);
 
-  chunk_size = utils::inumeric(FLERR, arg[8], true, lmp);
+  if (LAMMPS_NS::utils::lowercase(arg[6]) != "chunksize")
+    error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}");
+
+  chunk_size = utils::inumeric(FLERR, arg[7], true, lmp);
 
   // This also calls read_file which parses and loads the necessary arrays in host
-  PairMTPExtrapolation ::settings(6, arg);
+  PairMTPExtrapolation::settings(6, arg);
 
   // ---------- Now we move arrays to device ----------
   // First we set up the index lists
@@ -133,7 +139,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
                         alpha_index_basic_count, 4);
   MemKK::realloc_kokkos(d_alpha_index_times, "mtp/extrapolation/kk:alpha_index_times",
                         alpha_index_times_count, 4);
-  MemKK::realloc_kokkos(d_alpha_moment_mapping, "mtp/extrapolation/kk:moment_mapping",
+  MemKK::realloc_kokkos(d_alpha_moment_mapping, "mtp/extrapolation/kk:alpha_moment_mapping",
                         alpha_scalar_count);
 
   // Setup the learned coefficients
@@ -271,7 +277,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
   // Determine if we are doing extrapolation grade this timestep.
   steps_since_last_sample++;
-  bool calculate_grade_this_step = steps_since_last_sample < sampling_frequency;
+  bool calculate_grade_this_step = steps_since_last_sample >= sampling_frequency;
   if (calculate_grade_this_step) steps_since_last_sample = 0;
 
   eflag = eflag_in;
@@ -345,15 +351,13 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_radial_jacobian, chunk_size,
                     alpha_index_basic_count, species_count, radial_coeff_count);
   }
-  // Resize the jacobian if max_neighs is too large. Do not initalize; first access is write.
+  // Resize the jacobian and within _cutoff if max_neighs is too large. Do not initalize; first access is write.
   if ((int) d_moment_jacobian.extent(0) < chunk_size ||
-      (int) d_moment_jacobian.extent(1) < max_neighs)
+      (int) d_moment_jacobian.extent(1) < max_neighs) {
     Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size, max_neighs,
                     alpha_index_basic_count, 3);
-
-  // Resize the d_within_cutoff if max_neighs is too large. Do not initalize; first access is write.
-  if ((int) d_within_cutoff.extent(0) < max_neighs)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_within_cutoff, chunk_size, max_neighs);
+  }
 
   // Resize nbh grades to inum not chunk size. The reduces host communication need. Only 1 FP64 per nbh.
   if (!pool_grades && (int) d_nbh_extrapolation_grades.extent(0) < inum)
@@ -384,7 +388,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
       int team_size = team_size_default;
-      if (!host_flag && max_neighs < 32) team_size = 32;
+      if (max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
 
       // Only calculate the radial jacobian on steps extrapolation is needed
@@ -631,10 +635,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
   shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
   shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
 
-  // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
-  // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
-
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
+    const int jjj = team.team_rank();
     const int j = d_neighbors(i, jj) & NEIGHMASK;
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
@@ -646,13 +648,13 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
     if (!valid_pair) return;
     const F_FLOAT dist = sqrt(rsq);
 
-    s_dist_powers(jj, 0) = s_coord_powers(jj, 0, 0) = s_coord_powers(jj, 0, 1) =
-        s_coord_powers(jj, 0, 2) = 1;    // Set the constants
+    s_dist_powers(jjj, 0) = s_coord_powers(jjj, 0, 0) = s_coord_powers(jjj, 0, 1) =
+        s_coord_powers(jjj, 0, 2) = 1;    // Set the constants
 
     // Precompute the coord and distance power
     for (int k = 1; k < max_alpha_index_basic; k++) {
-      s_dist_powers(jj, k) = s_dist_powers(jj, k - 1) * dist;
-      for (int a = 0; a < 3; a++) s_coord_powers(jj, k, a) = s_coord_powers(jj, k - 1, a) * r[a];
+      s_dist_powers(jjj, k) = s_dist_powers(jjj, k - 1) * dist;
+      for (int a = 0; a < 3; a++) s_coord_powers(jjj, k, a) = s_coord_powers(jjj, k - 1, a) * r[a];
     }
 
     // ---------- Calculate the radial basis functions ----------
@@ -662,21 +664,21 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
     F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
     F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
-    s_radial_basis_vals(jj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
-    s_radial_basis_vals(jj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jjj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jjj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_vals(jj, k) =
-          2 * ksi * s_radial_basis_vals(jj, k - 1) - s_radial_basis_vals(jj, k - 2);
+      s_radial_basis_vals(jjj, k) =
+          2 * ksi * s_radial_basis_vals(jjj, k - 1) - s_radial_basis_vals(jjj, k - 2);
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(jj, 0) = scaling * 2 * (dist - max_cutoff);
-    s_radial_basis_ders(jj, 1) = scaling *
+    s_radial_basis_ders(jjj, 0) = scaling * 2 * (dist - max_cutoff);
+    s_radial_basis_ders(jjj, 1) = scaling *
         (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_ders(jj, k) =
-          2 * (mult * s_radial_basis_vals(jj, k - 1) + ksi * s_radial_basis_ders(jj, k - 1)) -
-          s_radial_basis_ders(jj, k - 2);
+      s_radial_basis_ders(jjj, k) =
+          2 * (mult * s_radial_basis_vals(jjj, k - 1) + ksi * s_radial_basis_ders(jjj, k - 1)) -
+          s_radial_basis_ders(jjj, k - 2);
     }
 
     //Now, we loop through all the basic alphas
@@ -695,19 +697,19 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
 
       // Find the radial component and its derivative
       for (int ri = 0; ri < radial_basis_size; ri++) {
-        val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(jj, ri);
-        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jj, ri);
+        val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(jjj, ri);
+        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jjj, ri);
       }
 
       // Normalize by the rank of alpha's coresponding tensor
       int norm_rank = a0 + a1 + a2;
-      F_FLOAT norm_fac = 1.0 / s_dist_powers(jj, norm_rank);
+      F_FLOAT norm_fac = 1.0 / s_dist_powers(jjj, norm_rank);
       val *= norm_fac;
       der = der * norm_fac - norm_rank * val / dist;
 
-      F_FLOAT pow0 = s_coord_powers(jj, a0, 0);
-      F_FLOAT pow1 = s_coord_powers(jj, a1, 1);
-      F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
+      F_FLOAT pow0 = s_coord_powers(jjj, a0, 0);
+      F_FLOAT pow1 = s_coord_powers(jjj, a1, 1);
+      F_FLOAT pow2 = s_coord_powers(jjj, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
       // I tried atomic adding to shared memory first but a direct atomic add to global memory was faster
@@ -720,9 +722,9 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
       temp_jac[1] = pow * r[1];
       temp_jac[2] = pow * r[2];
 
-      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jjj, a0 - 1, 0) * pow1 * pow2;
+      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jjj, a1 - 1, 1) * pow2;
+      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jjj, a2 - 1, 2);
 
       d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
       d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
@@ -1276,16 +1278,6 @@ void PairMTPExtrapolationKokkos<DeviceType>::check_team_size_for(int inum, int &
   team_size_max = Kokkos::TeamPolicy<DeviceType, TagStyle>(inum, Kokkos::AUTO)
                       .team_size_max(*this, Kokkos::ParallelForTag());
 
-  if (team_size * vector_length > team_size_max) team_size = team_size_max / vector_length;
-}
-
-template <class DeviceType>
-template <class TagStyle>
-void PairMTPExtrapolationKokkos<DeviceType>::check_team_size_for_reduce(int inum, int &team_size,
-                                                                        int vector_length)
-{
-  int team_size_max = Kokkos::TeamPolicy<DeviceType, TagStyle>(inum, Kokkos::AUTO)
-                          .team_size_max(*this, Kokkos::ParallelReduceTag());
   if (team_size * vector_length > team_size_max) team_size = team_size_max / vector_length;
 }
 

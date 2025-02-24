@@ -274,15 +274,13 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_energy_ders_wrt_moments, chunk_size,
                     alpha_moment_count);
   }
-  // Resize the jacobian if max_neighs is too large. Do not initalize; first access is write.
+  // Resize the jacobian and within _cutoff if max_neighs is too large. Do not initalize; first access is write.
   if ((int) d_moment_jacobian.extent(0) < chunk_size ||
-      (int) d_moment_jacobian.extent(1) < max_neighs)
+      (int) d_moment_jacobian.extent(1) < max_neighs) {
     Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, chunk_size, max_neighs,
                     alpha_index_basic_count, 3);
-
-  // Resize the d_within_cutoff if max_neighs is too large. Do not initalize; first access is write.
-  if ((int) d_within_cutoff.extent(0) < max_neighs)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_within_cutoff, chunk_size, max_neighs);
+  }
 
   EV_FLOAT ev;
 
@@ -436,9 +434,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
   shared_double_2d s_radial_basis_ders(team.team_scratch(0), team.team_size(), radial_basis_size);
   shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
   shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
-
-  // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
-  // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
 
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
     const int j = d_neighbors(i, jj) & NEIGHMASK;
