@@ -69,7 +69,6 @@ class PairMTPExtrapolation : public PairMTP {
   // Data for compiling configs in a MLIP-3 compatible format
   FILE *preselected_file;                  // Write to preselected file
   fmt::memory_buffer *write_buffer_ptr;    // Write buffer pointer
-  int allocated = 0;
 };
 
 }    // namespace LAMMPS_NS

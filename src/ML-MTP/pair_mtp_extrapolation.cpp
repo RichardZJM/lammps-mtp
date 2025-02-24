@@ -33,6 +33,7 @@
 #include <cmath>
 #include <csignal>
 #include <fstream>
+#include <iostream>
 
 using namespace LAMMPS_NS;
 
@@ -40,6 +41,8 @@ using namespace LAMMPS_NS;
 
 PairMTPExtrapolation::~PairMTPExtrapolation()
 {
+  if (copymode) return;
+
   if (allocated) {
     memory->destroy(active_set);
     memory->destroy(inverse_active_set);
@@ -326,6 +329,12 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 double PairMTPExtrapolation::calculate_extrapolation_grade()
 {
   // This should  use BLAS if possible
+  for (int i = 0; i < coeff_count; i++) std::cout << energy_ders_wrt_coeffs[i] << " ";
+  std::cout << std::endl;
+  std::cout << std::endl;
+  for (int i = 0; i < coeff_count; i++) std::cout << inverse_active_set[coeff_count - 1][i] << " ";
+  std::cout << std::endl;
+
   double max_grade = 0;
   for (int i = 0; i < coeff_count; i++) {
     double current_grade = 0;

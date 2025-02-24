@@ -38,13 +38,13 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   // Structs for kernels
   struct TagPairMTPInitMomentValsDers {};
   struct TagPairMTPInitRadJacobian {};
+  struct TagPairMTPInitCoeffDers {};
   struct TagPairMTPComputeAlphaBasic {};
   struct TagPairMTPComputeAlphaBasicRad {};
   struct TagPairMTPComputeAlphaTimes {};
   struct TagPairMTPSetScalarNbhDers {};
   struct TagPairMTPComputeNbhDers {};
   struct TagPairMTPReduceCoeffDers {};
-  struct TagPairMTPTransferBasisDers {};
   //   struct TagPairMTPComputeNbhGrades {};
   //   struct TagPairMTPComputeCfgGrade {};
   template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
@@ -87,6 +87,10 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
       void
       operator()(TagPairMTPInitRadJacobian, const int &ii, const int &k) const;
 
+  KOKKOS_INLINE_FUNCTION    // Only runs on steps when we sample extrapolation
+      void
+      operator()(TagPairMTPInitCoeffDers, const int &kk) const;
+
   // Kernels for computation
   KOKKOS_INLINE_FUNCTION
   void
@@ -125,9 +129,6 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   operator()(TagPairMTPReduceCoeffDers,
              const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceCoeffDers>::member_type
                  &team) const;
-
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPTransferBasisDers, const int &kk) const;
 
   //   KOKKOS_INLINE_FUNCTION
   //   void operator()(

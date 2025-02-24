@@ -17,6 +17,7 @@
 
 #include "pair_mtp_extrapolation_kokkos.h"
 
+#include "Kokkos_StdAlgorithms.hpp"
 #include "atom_kokkos.h"
 #include "atom_masks.h"
 #include "comm.h"
@@ -121,9 +122,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
     error->all(FLERR,
                "Pair mtp/extrapolation requires 8 arguments: {potential_file} "
                "{extrapolation_mode} {selection_threshold} {break_threshold} "
-               "{sampling_frequency} {output_file} \"chunk_size\" {chunksize}. Currently "
-               "specified: {} arguments!",
-               narg);
+               "{sampling_frequency} {output_file} \"chunk_size\" {chunksize}");
 
   if (LAMMPS_NS::utils::lowercase(arg[6]) != "chunksize")
     error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}");
@@ -280,6 +279,8 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   bool calculate_grade_this_step = steps_since_last_sample >= sampling_frequency;
   if (calculate_grade_this_step) steps_since_last_sample = 0;
 
+  max_grade = 0;
+
   eflag = eflag_in;
   vflag = vflag_in;
 
@@ -363,6 +364,12 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   if (!pool_grades && (int) d_nbh_extrapolation_grades.extent(0) < inum)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_extrapolation_grades, inum);
 
+  if (calculate_grade_this_step && pool_grades) {    // Init the coeff ders if cfg mode
+    typename Kokkos::RangePolicy<DeviceType, TagPairMTPInitCoeffDers> policy_coeff_init(
+        0, coeff_count);
+    Kokkos::parallel_for("InitCoeffDers", policy_coeff_init, *this);
+  }
+
   EV_FLOAT ev;
 
   // ========== Begin Main Computation ==========
@@ -441,35 +448,25 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     // ========== Reduce Basis Ders (Configuration mode) / Calculate Extrapolation (Neighbourhood Mode) ==========
     if (calculate_grade_this_step) {
       if (pool_grades) {    // Configuration mode,
-        // We are reduce across all atoms in the chunk.
-
         //Here is quick heurustuc tuned to work okay for most problem sizes and coeff counts.
         int team_size = 1024;
         int sizes[5] = {512, 256, 128, 64, 32};
         for (int i = 0; i < 5; i++) {
-          if (chunk_size <= team_size) break;
+          if (chunk_size >= sizes[i]) break;
           team_size = sizes[i];
         }
 
         // Perform the reduction across the current chunk_size
         int vector_length = vector_length_default;
-        check_team_size_for<TagPairMTPReduceCoeffDers>(chunk_size, team_size, vector_length);
+        check_team_size_for<TagPairMTPReduceCoeffDers>(coeff_count, team_size, vector_length);
         int scratch_size = scratch_size_helper<F_FLOAT>(0);
         Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceCoeffDers> policy_reduce_ders(coeff_count,
                                                                                      team_size);
         policy_reduce_ders = policy_reduce_ders.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
         Kokkos::parallel_for("ReduceBasisDers", policy_reduce_ders, *this);
 
-        // Sum the latest reduction with that of the previous chunk (if applicable)
-        if (chunk_offset != 0) {
-          typename Kokkos::RangePolicy<DeviceType, TagPairMTPTransferBasisDers> policy_transfer(
-              0, coeff_count);
-          Kokkos::parallel_for("TransferBasisDers", policy_transfer, *this);
-        } else {    // It it's the first or only chunk we can just swap pointers instead
-          Kokkos::kokkos_swap(d_energy_ders_wrt_coeffs, d_tmp_energy_ders_wrt_coeffs);
-        }
-      } else {                      // Neighbourhood mode
-        F_FLOAT chunk_max_grade;    // Reduce into a tmp variable
+      } else {                          // Neighbourhood mode
+        F_FLOAT chunk_max_grade = 0;    // Reduce into a tmp variable
         int team_size = team_size_default;
         if (!host_flag && coeff_count < 32) team_size = 32;
 
@@ -560,14 +557,18 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
   // Now, we need to handle the extrapolation obtained collectivelly across chunks.
   // This will also depend on if we are split across MPI processes.
-  if (pool_grades) {            // Configuration mode
-    if (comm->nprocs == 1) {    // Single Process
+  if (pool_grades) {              // Configuration mode
+    if (comm->nprocs == 100) {    // Single Process
       // If we are sure we are running on 1 process, we can directly evaluate the cfg grade on device
-      // Perform the reduction across the current chunk_size
-      int team_size = 128;
-      if (!host_flag && coeff_count < 64) team_size = 64;
+      // Perform the reduction across the current chunk_size. Simple heuristic for team size.
+      int team_size = 512;
+      int sizes[5] = {256, 128, 64};
+      for (int i = 0; i < 5; i++) {
+        if (coeff_count >= sizes[i]) break;
+        team_size = sizes[i];
+      }
 
-      int scratch_size = scratch_size_helper<F_FLOAT>(coeff_count);
+      int scratch_size = scratch_size_helper<F_FLOAT>(0);
       Kokkos::TeamPolicy<DeviceType> policy_calc_grades(coeff_count, team_size);
       policy_calc_grades.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
 
@@ -581,6 +582,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
           h_energy_ders_wrt_coeffs(energy_ders_wrt_coeffs, coeff_count);
       Kokkos::deep_copy(h_energy_ders_wrt_coeffs, d_energy_ders_wrt_coeffs);
+
       PairMTPExtrapolation::compile_grades();
     }
   } else {    // Neighbourhood mode
@@ -610,6 +612,14 @@ PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitRadJacobian, co
 {
   for (int jjtype = 0; jjtype < species_count; jjtype++)
     for (int ri = 0; ri < radial_coeff_count; ri++) d_radial_jacobian(ii, k, ri) = 0;
+}
+
+// Inits the coeff ders (only called on steps with extrapolation and cfg mode)
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void
+PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitCoeffDers, const int &kk) const
+{
+  d_energy_ders_wrt_coeffs(kk) = 0.0;
 }
 
 // Calculates the basic alphas
@@ -760,6 +770,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
   // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
 
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
+    const int jjj = team.team_rank();
     const int j = d_neighbors(i, jj) & NEIGHMASK;
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
@@ -771,13 +782,13 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
     if (!valid_pair) return;
     const F_FLOAT dist = sqrt(rsq);
 
-    s_dist_powers(jj, 0) = s_coord_powers(jj, 0, 0) = s_coord_powers(jj, 0, 1) =
-        s_coord_powers(jj, 0, 2) = 1;    // Set the constants
+    s_dist_powers(jjj, 0) = s_coord_powers(jjj, 0, 0) = s_coord_powers(jjj, 0, 1) =
+        s_coord_powers(jjj, 0, 2) = 1;    // Set the constants
 
     // Precompute the coord and distance power
     for (int k = 1; k < max_alpha_index_basic; k++) {
-      s_dist_powers(jj, k) = s_dist_powers(jj, k - 1) * dist;
-      for (int a = 0; a < 3; a++) s_coord_powers(jj, k, a) = s_coord_powers(jj, k - 1, a) * r[a];
+      s_dist_powers(jjj, k) = s_dist_powers(jjj, k - 1) * dist;
+      for (int a = 0; a < 3; a++) s_coord_powers(jjj, k, a) = s_coord_powers(jjj, k - 1, a) * r[a];
     }
 
     // ---------- Calculate the radial basis functions ----------
@@ -787,21 +798,21 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
     F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
     F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
-    s_radial_basis_vals(jj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
-    s_radial_basis_vals(jj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jjj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
+    s_radial_basis_vals(jjj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_vals(jj, k) =
-          2 * ksi * s_radial_basis_vals(jj, k - 1) - s_radial_basis_vals(jj, k - 2);
+      s_radial_basis_vals(jjj, k) =
+          2 * ksi * s_radial_basis_vals(jjj, k - 1) - s_radial_basis_vals(jjj, k - 2);
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(jj, 0) = scaling * 2 * (dist - max_cutoff);
-    s_radial_basis_ders(jj, 1) = scaling *
+    s_radial_basis_ders(jjj, 0) = scaling * 2 * (dist - max_cutoff);
+    s_radial_basis_ders(jjj, 1) = scaling *
         (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_ders(jj, k) =
-          2 * (mult * s_radial_basis_vals(jj, k - 1) + ksi * s_radial_basis_ders(jj, k - 1)) -
-          s_radial_basis_ders(jj, k - 2);
+      s_radial_basis_ders(jjj, k) =
+          2 * (mult * s_radial_basis_vals(jjj, k - 1) + ksi * s_radial_basis_ders(jjj, k - 1)) -
+          s_radial_basis_ders(jjj, k - 2);
     }
 
     //Now, we loop through all the basic alphas
@@ -816,22 +827,22 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
 
       // Normalize by the rank of alpha's coresponding tensor
       int norm_rank = a0 + a1 + a2;
-      F_FLOAT norm_fac = 1.0 / s_dist_powers(jj, norm_rank);
+      F_FLOAT norm_fac = 1.0 / s_dist_powers(jjj, norm_rank);
 
-      F_FLOAT pow0 = s_coord_powers(jj, a0, 0);
-      F_FLOAT pow1 = s_coord_powers(jj, a1, 1);
-      F_FLOAT pow2 = s_coord_powers(jj, a2, 2);
+      F_FLOAT pow0 = s_coord_powers(jjj, a0, 0);
+      F_FLOAT pow1 = s_coord_powers(jjj, a1, 1);
+      F_FLOAT pow2 = s_coord_powers(jjj, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
 
       //Find the offset for the radial basis coeffs
       int pair_offset = itype * species_count + jtype;
-      int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
+      int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
 
       // Find the radial component and its derivative
       for (int ri = 0; ri < radial_basis_size; ri++) {
-        F_FLOAT rad_val = s_radial_basis_vals(jj, ri);
+        F_FLOAT rad_val = s_radial_basis_vals(jjj, ri);
         val += d_radial_basis_coeffs(offset + ri) * rad_val;
-        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jj, ri);
+        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jjj, ri);
         // It might be preferable to add into shared memory.
         Kokkos::atomic_add(&d_radial_jacobian(ii, k, offset + ri), rad_val * norm_fac * pow);
       }
@@ -850,9 +861,9 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
       temp_jac[1] = pow * r[1];
       temp_jac[2] = pow * r[2];
 
-      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jjj, a0 - 1, 0) * pow1 * pow2;
+      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jjj, a1 - 1, 1) * pow2;
+      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jjj, a2 - 1, 2);
 
       d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
       d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
@@ -1007,8 +1018,7 @@ in the same kernel call. We will target 1 thread block per SM, so 1024 threads p
 It is probably  preferable to use different streams.
 */
   const int kk = team.league_rank();
-
-  // MAKE SURE THESE REDUCTIONS DON'T OVERWRITE THE PREVIOUS CHUNK!!!!!
+  F_FLOAT reduction_result = 0;
 
   if (kk < radial_coeff_count) {
     //Case 1: Radial coefficients
@@ -1016,22 +1026,24 @@ It is probably  preferable to use different streams.
         Kokkos::TeamThreadRange(team, chunk_size),
         [&](const int ii, F_FLOAT &sum) {
           F_FLOAT partial_sum = 0;
-
           const int i = d_ilist[ii + chunk_offset];
           const int itype = type[i] - 1;    // switch to zero indexing
 
           // We only take the deriatives based on the type of the central.
           // Since the radial array is flattened with the itype first, integer divide
           // by the width of itype * the coeffs per pair to check
+          // const int coeff_offset = itype * species_count * radial_coeff_count_per_pair;
+          // if (kk >= coeff_offset && kk < coeff_offset + species_count * radial_coeff_count_per_pair)
+          //   ;
+
           if (kk / (species_count * radial_coeff_count_per_pair) == itype) {
             for (int k = 0; k < alpha_index_basic_count; k++) {
               partial_sum += d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, kk);
             }
           }
-
           sum += partial_sum;
         },
-        Kokkos::Sum<F_FLOAT>(d_tmp_energy_ders_wrt_coeffs(kk)));
+        reduction_result);
   } else if (kk < radial_coeff_count + species_count) {
     //Case 2: Species coefficient
     Kokkos::parallel_reduce(
@@ -1040,30 +1052,27 @@ It is probably  preferable to use different streams.
           const int i = d_ilist[ii + chunk_offset];
           const int itype = type[i] - 1;    // switch to zero indexing
           F_FLOAT val = 0.0;
-          if (itype == kk - coeff_count) val = 1.0;
+          if (itype == kk - radial_coeff_count) val = 1.0;
           sum += val;
         },
-        Kokkos::Sum<F_FLOAT>(d_tmp_energy_ders_wrt_coeffs(kk)));
+        reduction_result);
 
   } else {
     //Case 3: Basis set
     Kokkos::parallel_reduce(
         Kokkos::TeamThreadRange(team, chunk_size),
         [&](const int ii, F_FLOAT &sum) {
-          sum += d_moment_tensor_vals(ii, d_alpha_moment_mapping(kk));
+          sum += d_moment_tensor_vals(
+              ii, d_alpha_moment_mapping(kk - species_count - radial_coeff_count));
         },
-        Kokkos::Sum<F_FLOAT>(d_tmp_energy_ders_wrt_coeffs(kk)));
+        reduction_result);
   }
+  Kokkos::single(Kokkos::PerTeam(team), [&]() {
+    d_energy_ders_wrt_coeffs(kk) += reduction_result;
+  });
 }
 
-// Transfers the coeff ders of the previous chunk
-template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void
-PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPTransferBasisDers, const int &kk) const
-{
-  d_energy_ders_wrt_coeffs(kk) += d_tmp_energy_ders_wrt_coeffs(kk);
-}
-
+// Compute the extrapolation grade for all nbhs and reduce the maximum value
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
     const typename Kokkos::TeamPolicy<DeviceType>::member_type &team, F_FLOAT &nbh_max_grade) const
@@ -1130,15 +1139,18 @@ KOKKOS_INLINE_FUNCTION void ComputeCfgGrade<DeviceType>::operator()(
   int ik = team.league_rank();
 
   // Now we can calculate the swap grade of this row with a parallel reduction
-  F_FLOAT candidate_grade;
+  F_FLOAT candidate_grade = 0;
   Kokkos::parallel_reduce(
       Kokkos::TeamThreadRange(team, coeff_count),
       [&](const int jk, F_FLOAT &grade) {
         grade += d_energy_ders_wrt_coeffs(jk) * d_inverse_active_set(ik, jk);
       },
-      Kokkos::Sum<F_FLOAT, DeviceType>(candidate_grade));
+      candidate_grade);
   candidate_grade = Kokkos::abs(candidate_grade);
-  cfg_max_grade = (candidate_grade < cfg_max_grade) ? cfg_max_grade : candidate_grade;
+
+  Kokkos::single(Kokkos::PerTeam(team), [&]() {
+    cfg_max_grade = (candidate_grade < cfg_max_grade) ? cfg_max_grade : candidate_grade;
+  });
 }
 
 // Computes the extrapolation grades for each nbh
@@ -1296,9 +1308,11 @@ int PairMTPExtrapolationKokkos<DeviceType>::scratch_size_helper(int values_per_t
 
 namespace LAMMPS_NS {
 template class PairMTPExtrapolationKokkos<LMPDeviceType>;
-template class ComputeNbhGrades<LMPDeviceType>;
+// template class ComputeNbhGrades<LMPDeviceType>;
+// template class ComputeCfgGrade<LMPDeviceType>;
 #ifdef LMP_KOKKOS_GPU
 template class PairMTPExtrapolationKokkos<LMPHostType>;
-template class ComputeNbhGrades<LMPHostType>;
+// template class ComputeNbhGrades<LMPHostType>;
+// template class ComputeCfgGrade<LMPHostType>;
 #endif
 }    // namespace LAMMPS_NS
