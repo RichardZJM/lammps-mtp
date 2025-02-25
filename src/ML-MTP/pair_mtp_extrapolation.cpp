@@ -316,7 +316,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       max_grade = 0;
       double grade = calculate_extrapolation_grade();
       max_grade = std::max(grade, max_grade);
-      nbh_extrapolation_grades[ii] = grade;
+      nbh_extrapolation_grades[i] = grade;
     }
   }
   compile_grades();
@@ -392,23 +392,23 @@ void PairMTPExtrapolation::write_config()
 ------------------------------------------------------------------------- */
   write_buffer_ptr->clear();    // Clear the buffer from the last print
 
-  int inum = list->inum;       // The number of central atoms (neigbhourhoods)
-  int *ilist = list->ilist;    // List of atom ids
-  int *type = atom->type;      //atomic types
-  double **x = atom->x;        // atomic positons
-  int index_offset;            // offset to get global indicies
+  int inum = list->inum;    // The number of central atoms (neigbhourhoods)
+  // int *ilist = list->ilist;    // List of atom ids
+  int *type = atom->type;    //atomic types
+  double **x = atom->x;      // atomic positons
+  int index_offset = 0;      // offset to get global indicies
 
   MPI_Scan(&inum, &index_offset, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
   index_offset -= inum;
 
   for (int ii = 0; ii < inum; ii++) {
-    const int i = ilist[ii];
+    const int i = ii;    //= ilist[i];    // Best that this is the ilist but this doesn't work.
     const int itype = type[i] - 1;
     const double xi[3] = {x[i][0], x[i][1], x[i][2]};
     const int global_i = i + index_offset;
 
     if (!pool_grades) {
-      const double grade = nbh_extrapolation_grades[ii];
+      const double grade = nbh_extrapolation_grades[i];
       fmt::format_to(std::back_inserter(*write_buffer_ptr),
                      "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n", global_i, itype, xi[0], xi[1],
                      xi[2], grade);

@@ -1035,9 +1035,6 @@ It is probably  preferable to use different streams.
           // We only take the deriatives based on the type of the central.
           // Since the radial array is flattened with the itype first, integer divide
           // by the width of itype * the coeffs per pair to check
-          // const int coeff_offset = itype * species_count * radial_coeff_count_per_pair;
-          // if (kk >= coeff_offset && kk < coeff_offset + species_count * radial_coeff_count_per_pair)
-          //   ;
 
           if (kk / (species_count * radial_coeff_count_per_pair) == itype) {
             const int local_index = kk % (species_count * radial_coeff_count_per_pair);
@@ -1093,12 +1090,10 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
   shared_double_1d s_candidate_vector(team.team_scratch(0), team.team_size(), coeff_count);
 
   // Initialize the species coeff ders
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, species_count), [&](const int k) {
-    s_candidate_vector(radial_coeff_count + k) = 0.0;
-  });
-
-  // Store the species der
-  s_candidate_vector(radial_coeff_count + itype) = 1;
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, radial_coeff_count + species_count),
+                       [&](const int k) {
+                         s_candidate_vector(k) = 0.0;
+                       });
 
   // First calculate the radial ders and store into shared memory
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [&](const int k) {
@@ -1117,6 +1112,13 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
     s_candidate_vector(moment_offset + k) = d_moment_tensor_vals(ii, d_alpha_moment_mapping(k));
   });
 
+  // Store the species der
+  Kokkos::single(Kokkos::PerTeam(team), [&]() {
+    s_candidate_vector(radial_coeff_count + itype) = 1;
+  });
+
+  team.team_barrier();    // Barrier to ensure all data is loaded
+
   // Now we can calculate the extrapolation grade with a parallel reduction
   F_FLOAT nbh_grade = 0;
 
@@ -1128,12 +1130,14 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
           current_grade += s_candidate_vector(j) * d_inverse_active_set(i, j);
         }
         current_grade = Kokkos::abs(current_grade);
-        grade = (grade < current_grade) ? current_grade : grade;
+        grade = (grade > current_grade) ? grade : current_grade;
       },
       Kokkos::Max<F_FLOAT, DeviceType>(nbh_grade));
 
-  d_nbh_extrapolation_grades(ii + chunk_offset) = nbh_grade;
-  nbh_max_grade = (nbh_grade < nbh_max_grade) ? nbh_max_grade : nbh_grade;
+  Kokkos::single(Kokkos::PerTeam(team), [&]() {
+    d_nbh_extrapolation_grades(i) = nbh_grade;
+    nbh_max_grade = nbh_grade > nbh_max_grade ? nbh_grade : nbh_max_grade;
+  });
 }
 
 template <class DeviceType>
