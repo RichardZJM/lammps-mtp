@@ -385,16 +385,16 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     // ========== Init working views as 0  ==========
     {
 
-      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
-          policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
-      Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
-
       // Only init data needed for extrapolation on steps it's needed
       if (calculate_grade_this_step) {
         typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitRadJacobian>
             policy_rad_jac_init({0, 0}, {chunk_size, alpha_index_basic_count});
-        Kokkos::parallel_for("InitRadJacobian", policy_rad_jac_init, *this);
+        Kokkos::parallel_for("InitRadJacobian", policy_rad_jac_init,
+                             *this);    // This kernel also inits the below
       }
+      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
+          policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
+      Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
     }
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
@@ -610,14 +610,14 @@ PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers,
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
 }
 
-// Inits the radial jacobian (only called on steps with extrapolation)
+// Inits the radial jacobian (only called on steps with extrapolation) anddo the above
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void
 PairMTPExtrapolationKokkos<DeviceType>::operator()(TagPairMTPInitRadJacobian, const int &ii,
                                                    const int &k) const
 {
-  for (int jjtype = 0; jjtype < species_count; jjtype++)
-    for (int ri = 0; ri < radial_coeff_count; ri++) d_radial_jacobian(ii, k, ri) = 0;
+  for (int ri = 0; ri < species_count * radial_coeff_count_per_pair; ri++)
+    d_radial_jacobian(ii, k, ri) = 0;
 }
 
 // Inits the coeff ders (only called on steps with extrapolation and cfg mode)
