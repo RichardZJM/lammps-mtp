@@ -154,7 +154,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/extrapolation/kk:moment_jacobian", 1, 1,
                         alpha_index_basic_count, 3);
   MemKK::realloc_kokkos(d_radial_jacobian, "mtp/extrapolation/kk:radial_jacobian", 1,
-                        alpha_index_basic_count, radial_coeff_count);
+                        alpha_index_basic_count, radial_coeff_count_per_pair * species_count);
   MemKK::realloc_kokkos(d_within_cutoff, "mtp/extrapolation/kk:within_cutoff", 1, 1);
   MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/extrapolation/kk:moment_tensor_vals", 1,
                         alpha_moment_count);
@@ -350,7 +350,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_energy_ders_wrt_moments, chunk_size,
                     alpha_moment_count);
     Kokkos::realloc(Kokkos::WithoutInitializing, d_radial_jacobian, chunk_size,
-                    alpha_index_basic_count, species_count, radial_coeff_count);
+                    alpha_index_basic_count, species_count * radial_coeff_count_per_pair);
   }
   // Resize the jacobian and within _cutoff if max_neighs is too large. Do not initalize; first access is write.
   if ((int) d_moment_jacobian.extent(0) < chunk_size ||
@@ -835,8 +835,9 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
       F_FLOAT pow = pow0 * pow1 * pow2;
 
       //Find the offset for the radial basis coeffs
-      int pair_offset = itype * species_count + jtype;
-      int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
+      const int pair_offset = itype * species_count + jtype;
+      const int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
+      const int rad_offset = jtype * radial_coeff_count_per_pair + mu * radial_basis_size;
 
       // Find the radial component and its derivative
       for (int ri = 0; ri < radial_basis_size; ri++) {
@@ -844,7 +845,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
         val += d_radial_basis_coeffs(offset + ri) * rad_val;
         der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jjj, ri);
         // It might be preferable to add into shared memory.
-        Kokkos::atomic_add(&d_radial_jacobian(ii, k, offset + ri), rad_val * norm_fac * pow);
+        Kokkos::atomic_add(&d_radial_jacobian(ii, k, rad_offset + ri), rad_val * norm_fac * pow);
       }
 
       val *= norm_fac;
@@ -1037,8 +1038,10 @@ It is probably  preferable to use different streams.
           //   ;
 
           if (kk / (species_count * radial_coeff_count_per_pair) == itype) {
+            const int local_index = kk % (species_count * radial_coeff_count_per_pair);
             for (int k = 0; k < alpha_index_basic_count; k++) {
-              partial_sum += d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, kk);
+              partial_sum +=
+                  d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, local_index);
             }
           }
           sum += partial_sum;
@@ -1113,7 +1116,7 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
   });
 
   // Now we can calculate the extrapolation grade with a parallel reduction
-  F_FLOAT nbh_grade;
+  F_FLOAT nbh_grade = 0;
 
   Kokkos::parallel_reduce(
       Kokkos::TeamThreadRange(team, coeff_count),
