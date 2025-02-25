@@ -68,6 +68,8 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     return;
   }
 
+  max_grade = 0;
+
   ev_setup(eflag, vflag);
 
   double **x = atom->x;      // atomic positons
@@ -366,8 +368,10 @@ void PairMTPExtrapolation::compile_grades()
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::evaluate_grades()
 {
-  MPI_Allreduce(&list->inum, &global_atom_count, 1, MPI_DOUBLE, MPI_SUM, world);
-  if (pool_grades) max_grade /= global_atom_count;    // CFG mode: Normalize by atom count
+  if (atom->natoms == 0)
+    max_grade = 0;
+  else if (pool_grades)
+    max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
 
   if (max_grade >= select_threshold && save_configs) write_config();
   if (max_grade >= break_threshold && comm->me == 0) {

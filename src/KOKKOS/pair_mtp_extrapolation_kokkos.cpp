@@ -218,8 +218,10 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
 
 template <class DeviceType> void PairMTPExtrapolationKokkos<DeviceType>::evaluate_grades()
 {
-  MPI_Allreduce(&list->inum, &global_atom_count, 1, MPI_DOUBLE, MPI_SUM, world);
-  if (pool_grades) max_grade /= global_atom_count;    // CFG mode: Normalize by atom count
+  if (atom->natoms == 0)
+    max_grade = 0;
+  else if (pool_grades)
+    max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
 
   if (max_grade >= select_threshold && save_configs) {
     // Sync atom positions, id, and types to the host
