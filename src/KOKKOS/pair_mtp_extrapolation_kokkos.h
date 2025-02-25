@@ -146,7 +146,6 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   int chunk_size,
       chunk_offset;    // Needed to process the computation in batches to avoid running out of VRAM.
 
-  // Characteric flags
   int inum, max_neighs;
   int host_flag, neighflag;
 

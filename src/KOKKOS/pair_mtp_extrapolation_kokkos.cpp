@@ -557,8 +557,8 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
   // Now, we need to handle the extrapolation obtained collectivelly across chunks.
   // This will also depend on if we are split across MPI processes.
-  if (pool_grades) {              // Configuration mode
-    if (comm->nprocs == 100) {    // Single Process
+  if (pool_grades) {            // Configuration mode
+    if (comm->nprocs == 1) {    // Single Process
       // If we are sure we are running on 1 process, we can directly evaluate the cfg grade on device
       // Perform the reduction across the current chunk_size. Simple heuristic for team size.
       int team_size = 512;
@@ -576,16 +576,18 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
           "ComputeCfgGrade", policy_calc_grades,
           ComputeCfgGrade<DeviceType>(coeff_count, d_energy_ders_wrt_coeffs, d_inverse_active_set),
           Kokkos::Max<F_FLOAT>(max_grade));
-
     } else {    // Multiple Processes
-      // On multiple procs we need to most to host and MPI reduce across ranks
+
+      // On multiple procs we need to move ders to host and MPI reduce across ranks
       Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
           h_energy_ders_wrt_coeffs(energy_ders_wrt_coeffs, coeff_count);
       Kokkos::deep_copy(h_energy_ders_wrt_coeffs, d_energy_ders_wrt_coeffs);
 
       PairMTPExtrapolation::compile_grades();
+      max_grade = PairMTPExtrapolation::calculate_extrapolation_grade();
     }
-  } else {    // Neighbourhood mode
+    max_grade = max_grade / inum;    // Normalize by atom count in CFG mode
+  } else {                           // Neighbourhood mode
     if (comm->nprocs > 1) PairMTPExtrapolation::compile_grades();
   }
 

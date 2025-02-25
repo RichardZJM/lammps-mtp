@@ -343,8 +343,7 @@ double PairMTPExtrapolation::calculate_extrapolation_grade()
     }
     max_grade = std::max(std::abs(current_grade), max_grade);
   }
-  // This division by 2 ensures back-compatability. Not mathematical necesary.
-  return max_grade / 2;
+  return max_grade;
 }
 
 /* ----------------------------------------------------------------------
@@ -371,6 +370,7 @@ void PairMTPExtrapolation::compile_grades()
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::evaluate_grades()
 {
+  if (pool_grades) max_grade = max_grade / list->inum;    // CFG mode: Normalize byatom count
   if (max_grade >= select_threshold && save_configs) write_config();
   if (max_grade >= break_threshold && comm->me == 0) {
     std::fflush(preselected_file);    // Ensure the writing buffers are flushed before breaking.
