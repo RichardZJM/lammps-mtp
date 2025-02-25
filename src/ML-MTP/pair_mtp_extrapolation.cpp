@@ -49,6 +49,8 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
     memory->destroy(radial_jacobian);
     memory->destroy(energy_ders_wrt_coeffs);
     if (!pool_grades) memory->destroy(nbh_extrapolation_grades);
+    delete write_buffer_ptr;
+    write_buffer_ptr = nullptr;
   }
 }
 
@@ -329,12 +331,6 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 double PairMTPExtrapolation::calculate_extrapolation_grade()
 {
   // This should  use BLAS if possible
-  for (int i = 0; i < coeff_count; i++) std::cout << energy_ders_wrt_coeffs[i] << " ";
-  std::cout << std::endl;
-  std::cout << std::endl;
-  for (int i = 0; i < coeff_count; i++) std::cout << inverse_active_set[coeff_count - 1][i] << " ";
-  std::cout << std::endl;
-
   double max_grade = 0;
   for (int i = 0; i < coeff_count; i++) {
     double current_grade = 0;
@@ -370,7 +366,9 @@ void PairMTPExtrapolation::compile_grades()
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::evaluate_grades()
 {
-  if (pool_grades) max_grade = max_grade / list->inum;    // CFG mode: Normalize byatom count
+  MPI_Allreduce(&list->inum, &global_atom_count, 1, MPI_DOUBLE, MPI_SUM, world);
+  if (pool_grades) max_grade /= global_atom_count;    // CFG mode: Normalize by atom count
+
   if (max_grade >= select_threshold && save_configs) write_config();
   if (max_grade >= break_threshold && comm->me == 0) {
     std::fflush(preselected_file);    // Ensure the writing buffers are flushed before breaking.
@@ -419,11 +417,9 @@ void PairMTPExtrapolation::write_config()
 
   bigint char_buffer_size = write_buffer_ptr->size();
   bigint max_char_buffer_size;
-  int cum_atom_count = inum;
 
   // We first communicate the maximum needed buffer size and the cumulative atom count to the writer process (rank 0)
   MPI_Reduce(&char_buffer_size, &max_char_buffer_size, 1, MPI_LMP_BIGINT, MPI_MAX, 0, world);
-  MPI_Reduce(&inum, &cum_atom_count, 1, MPI_INT, MPI_SUM, 0, world);
 
   if (comm->me == 0 && max_char_buffer_size > write_buffer_ptr->capacity())
     write_buffer_ptr->reserve(max_char_buffer_size);
@@ -432,7 +428,7 @@ void PairMTPExtrapolation::write_config()
   if (comm->me == 0) {
     std::fprintf(preselected_file, "BEGIN_CFG\n");
     std::fprintf(preselected_file, "Size\n");
-    std::fprintf(preselected_file, "%d\n", cum_atom_count);
+    std::fprintf(preselected_file, "%d\n", global_atom_count);
     std::fprintf(preselected_file, "Supercell\n");
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xprd, 0.0, 0.0);
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xy, domain->yprd, 0.0);
@@ -513,10 +509,8 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   read_file(mtp_file);
   fclose(mtp_file);
 
-  if (save_configs && comm->me == 0) {
-    preselected_file = std::fopen(arg[5], "w");
-    write_buffer_ptr = new fmt::memory_buffer();
-  }
+  if (save_configs && comm->me == 0) preselected_file = std::fopen(arg[5], "w");
+  write_buffer_ptr = new fmt::memory_buffer();
 }
 
 /* ----------------------------------------------------------------------

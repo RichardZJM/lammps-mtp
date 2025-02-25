@@ -218,6 +218,9 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
 
 template <class DeviceType> void PairMTPExtrapolationKokkos<DeviceType>::evaluate_grades()
 {
+  MPI_Allreduce(&list->inum, &global_atom_count, 1, MPI_DOUBLE, MPI_SUM, world);
+  if (pool_grades) max_grade /= global_atom_count;    // CFG mode: Normalize by atom count
+
   if (max_grade >= select_threshold && save_configs) {
     // Sync atom positions, id, and types to the host
     atomKK->sync(Host, X_MASK | TYPE_MASK);
@@ -585,9 +588,8 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
       PairMTPExtrapolation::compile_grades();
       max_grade = PairMTPExtrapolation::calculate_extrapolation_grade();
-    }
-    max_grade = max_grade / inum;    // Normalize by atom count in CFG mode
-  } else {                           // Neighbourhood mode
+    }    // Normalize by atom count in CFG mode
+  } else {    // Neighbourhood mode
     if (comm->nprocs > 1) PairMTPExtrapolation::compile_grades();
   }
 
@@ -1089,7 +1091,7 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
   // Shared memory to store the candidate vector
   shared_double_1d s_candidate_vector(team.team_scratch(0), team.team_size(), coeff_count);
 
-  // Initialize the species coeff ders
+  // Initialize the radial and species coeff ders
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, radial_coeff_count + species_count),
                        [&](const int k) {
                          s_candidate_vector(k) = 0.0;
