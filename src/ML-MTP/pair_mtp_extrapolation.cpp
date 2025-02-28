@@ -432,7 +432,7 @@ void PairMTPExtrapolation::write_config()
   if (comm->me == 0) {
     std::fprintf(preselected_file, "BEGIN_CFG\n");
     std::fprintf(preselected_file, "Size\n");
-    std::fprintf(preselected_file, "%d\n", global_atom_count);
+    std::fprintf(preselected_file, "%d\n", atom->natoms);
     std::fprintf(preselected_file, "Supercell\n");
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xprd, 0.0, 0.0);
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xy, domain->yprd, 0.0);
