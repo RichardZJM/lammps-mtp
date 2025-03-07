@@ -420,7 +420,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type &team)
     const
 {
-  // If precomputing everything is too much memory, we can consider calculating dist powers and coord powers on-the-fly with pow.
   shared_double_2d s_radial_basis_vals(team.team_scratch(0), team.team_size(), radial_basis_size);
   shared_double_2d s_radial_basis_ders(team.team_scratch(0), team.team_size(), radial_basis_size);
   shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);

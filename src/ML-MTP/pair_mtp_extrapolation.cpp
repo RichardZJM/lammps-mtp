@@ -317,7 +317,6 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
     // Directly calculate extraplation grade for neighbourhood mode
     if (!pool_grades) {
-      max_grade = 0;
       double grade = calculate_extrapolation_grade();
       max_grade = std::max(grade, max_grade);
       nbh_extrapolation_grades[i] = grade;
@@ -432,7 +431,7 @@ void PairMTPExtrapolation::write_config()
   if (comm->me == 0) {
     std::fprintf(preselected_file, "BEGIN_CFG\n");
     std::fprintf(preselected_file, "Size\n");
-    std::fprintf(preselected_file, "%d\n", atom->natoms);
+    std::fprintf(preselected_file, "%ld\n", atom->natoms);
     std::fprintf(preselected_file, "Supercell\n");
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xprd, 0.0, 0.0);
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xy, domain->yprd, 0.0);
