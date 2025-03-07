@@ -407,7 +407,7 @@ void PairMTPExtrapolation::write_config()
     const int i = ii;    //= ilist[i];    // Best that this is the ilist but this doesn't work.
     const int itype = type[i] - 1;
     const double xi[3] = {x[i][0], x[i][1], x[i][2]};
-    const int global_i = i + index_offset;
+    const int global_i = i + index_offset + 1;
 
     if (!pool_grades) {
       const double grade = nbh_extrapolation_grades[i];
