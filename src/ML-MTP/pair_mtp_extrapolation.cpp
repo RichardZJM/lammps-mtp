@@ -285,23 +285,22 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       if (vflag) {
         // We only need to calculate rel pos again if stress are needed
         const double r[3] = {x[j][0] - xi[0], x[j][1] - xi[1], x[j][2] - xi[2]};
-        virial[0] -= temp_force[0] * r[0] * 2;    //xx
-        virial[1] -= temp_force[1] * r[1] * 2;    //yy
-        virial[2] -= temp_force[2] * r[2] * 2;    //zz
+        virial[0] -= temp_force[0] * r[0];    //xx
+        virial[1] -= temp_force[1] * r[1];    //yy
+        virial[2] -= temp_force[2] * r[2];    //zz
 
-        virial[3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]);    //xy
-        virial[4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]);    //xz
-        virial[5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]);    //yz
+        virial[3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]) / 2;    //xy
+        virial[4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]) / 2;    //xz
+        virial[5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]) / 2;    //yz
 
-        //This can be more efficient but I'm not sure if it's even needed.
         if (vflag_atom) {
-          vatom[i][0] -= temp_force[0] * r[0] * 2;    //xx
-          vatom[i][1] -= temp_force[1] * r[1] * 2;    //yy
-          vatom[i][2] -= temp_force[2] * r[2] * 2;    //zz
+          vatom[i][0] -= temp_force[0] * r[0];    //xx
+          vatom[i][1] -= temp_force[1] * r[1];    //yy
+          vatom[i][2] -= temp_force[2] * r[2];    //zz
 
-          vatom[i][3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]);    //xy
-          vatom[i][4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]);    //xz
-          vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]);    //yz
+          vatom[i][3] -= (temp_force[0] * r[1] + temp_force[1] * r[0]) / 2;    //xy
+          vatom[i][4] -= (temp_force[0] * r[2] + temp_force[2] * r[0]) / 2;    //xz
+          vatom[i][5] -= (temp_force[1] * r[2] + temp_force[2] * r[1]) / 2;    //yz
         }
       }
     }
