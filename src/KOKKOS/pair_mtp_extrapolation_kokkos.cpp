@@ -1084,7 +1084,7 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
   const int itype = type(i) - 1;    // switch to zero indexing
 
   // Shared memory to store the candidate vector
-  shared_double_1d s_candidate_vector(team.team_scratch(0), team.team_size(), coeff_count);
+  shared_double_1d s_candidate_vector(team.team_scratch(0), coeff_count);
 
   // Initialize the radial and species coeff ders
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, radial_coeff_count + species_count),
@@ -1095,13 +1095,10 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
 
   // First calculate the radial ders and store into shared memory
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [&](const int k) {
-    for (int jjtype = 0; jjtype < species_count; jjtype++) {
-      int offset = (itype * species_count + jjtype) * radial_coeff_count_per_pair;
-      for (int ri = 0; ri < radial_coeff_count_per_pair; ri++)
-        Kokkos::atomic_add(&s_candidate_vector(offset + ri),
-                           d_nbh_energy_ders_wrt_moments(ii, k) *
-                               d_radial_jacobian(ii, k, offset + ri));
-    }
+    int offset = itype * species_count * radial_coeff_count_per_pair;
+    for (int ri = 0; ri < radial_coeff_count_per_pair * species_count; ri++)
+      Kokkos::atomic_add(&s_candidate_vector(offset + ri),
+                         d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, ri));
   });
 
   // Load the basis vals into shared memory
