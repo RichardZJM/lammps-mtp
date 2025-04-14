@@ -472,21 +472,43 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
 
       } else {                          // Neighbourhood mode
         F_FLOAT chunk_max_grade = 0;    // Reduce into a tmp variable
-        int team_size = team_size_default;
-        if (!host_flag && coeff_count < 32) team_size = 32;
 
-        int scratch_size = scratch_size_helper<F_FLOAT>(coeff_count);
-        Kokkos::TeamPolicy<DeviceType> policy_calc_grades(chunk_size, team_size);
+        int team_size = 1024;
+
+        // Temporary policy to get the maximum scratch size
+        // TODO:; We can move outside th ecompute loop
+        Kokkos::TeamPolicy<DeviceType> tmp_size_policy(chunk_size, team_size);
+
+        // We need to reserve some space for the reductions
+        int max_scratch = tmp_size_policy.scratch_size_max(0) - 128;
+        //Need and extra float to hold the maximum nbh grade
+        int memory_per_sub_team = sizeof(F_FLOAT) * (coeff_count + 1);
+        int sub_team_count = max_scratch / memory_per_sub_team;
+
+        int scratch_size =
+            scratch_size_helper<F_FLOAT>(sub_team_count * coeff_count + sub_team_count);
+
+        Kokkos::TeamPolicy<DeviceType> policy_calc_grades(
+            (chunk_size + sub_team_count - 1) / sub_team_count, team_size);
         policy_calc_grades.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
 
-        Kokkos::parallel_reduce(
-            "ComputeNbhGrades", policy_calc_grades,
-            ComputeNbhGrades<DeviceType>(
-                chunk_size, chunk_offset, d_ilist, type, species_count, radial_coeff_count,
-                alpha_index_basic_count, radial_coeff_count_per_pair, alpha_scalar_count,
-                coeff_count, d_nbh_energy_ders_wrt_moments, d_radial_jacobian, d_moment_tensor_vals,
-                d_alpha_moment_mapping, d_inverse_active_set, d_nbh_extrapolation_grades),
-            Kokkos::Max<F_FLOAT>(chunk_max_grade));
+        Kokkos::View<F_FLOAT *, DeviceType> d_temp;
+        // MemKK::realloc_kokkos(d_temp, "temp", coeff_count);
+        // auto h_temp = Kokkos::create_mirror_view(d_temp);
+
+        Kokkos::parallel_reduce("ComputeNbhGrades", policy_calc_grades,
+                                ComputeNbhGrades<DeviceType>(
+                                    sub_team_count, chunk_size, chunk_offset, d_ilist, type,
+                                    species_count, radial_coeff_count, alpha_index_basic_count,
+                                    radial_coeff_count_per_pair, alpha_scalar_count, coeff_count,
+                                    d_nbh_energy_ders_wrt_moments, d_radial_jacobian,
+                                    d_moment_tensor_vals, d_alpha_moment_mapping,
+                                    d_inverse_active_set, d_nbh_extrapolation_grades, d_temp),
+                                Kokkos::Max<F_FLOAT>(chunk_max_grade));
+
+        // Kokkos::deep_copy(h_temp, d_temp);
+        // for (int dfos = 0; dfos < coeff_count; dfos++) std::cout << h_temp[dfos] << " ";
+        // std::cout << std::endl;
 
         max_grade = Kokkos::max(chunk_max_grade, max_grade);    // Get max over all chunks
       }
@@ -1076,63 +1098,88 @@ template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
     const typename Kokkos::TeamPolicy<DeviceType>::member_type &team, F_FLOAT &nbh_max_grade) const
 {
-  // Extract the atom number
-  int ii = team.league_rank();
-  if (ii >= chunk_size) return;
-
-  const int i = d_ilist(ii + chunk_offset);
-  const int itype = type(i) - 1;    // switch to zero indexing
 
   // Shared memory to store the candidate vector
-  shared_double_1d s_candidate_vector(team.team_scratch(0), coeff_count);
+  shared_double_2d s_candidate_vectors(team.team_scratch(0), sub_team_count, coeff_count);
+  shared_double_1d s_nbh_grades(team.team_scratch(0), sub_team_count);
 
   // Initialize the radial and species coeff ders
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, radial_coeff_count + species_count),
-                       [&](const int k) {
-                         s_candidate_vector(k) = 0.0;
-                       });
+  Kokkos::parallel_for(
+      Kokkos::TeamThreadMDRange<Kokkos::Rank<2>,
+                                typename Kokkos::TeamPolicy<DeviceType>::member_type>(
+          team, sub_team_count, radial_coeff_count + species_count),
+      [&](const int si, const int ci) {
+        s_candidate_vectors(si, ci) = 0.0;
+      });
+
   team.team_barrier();    // Barrier to ensure all vals are inited
 
-  // First calculate the radial ders and store into shared memory
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [&](const int k) {
-    int offset = itype * species_count * radial_coeff_count_per_pair;
-    for (int ri = 0; ri < radial_coeff_count_per_pair * species_count; ri++)
-      Kokkos::atomic_add(&s_candidate_vector(offset + ri),
-                         d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, ri));
-  });
+  // // Calculate the radial parameters
+  Kokkos::parallel_for(
+      Kokkos::TeamThreadMDRange<Kokkos::Rank<2>,
+                                typename Kokkos::TeamPolicy<DeviceType>::member_type>(
+          team, sub_team_count, alpha_index_basic_count),
+      [&](const int si, const int k) {
+        const int ii = si + team.league_rank() * sub_team_count;
+        if (ii >= chunk_size) return;
+        const int i = d_ilist(ii + chunk_offset);
+        const int itype = type(i) - 1;    // switch to zero indexing
+        const int offset = itype * species_count * radial_coeff_count_per_pair;
 
-  // Load the basis vals into shared memory
-  int moment_offset = radial_coeff_count + species_count;
-  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_scalar_count), [&](const int k) {
-    s_candidate_vector(moment_offset + k) = d_moment_tensor_vals(ii, d_alpha_moment_mapping(k));
-  });
+        F_FLOAT nbh_der = d_nbh_energy_ders_wrt_moments(ii, k);
+        for (int ri = 0; ri < radial_coeff_count_per_pair * species_count; ri++) {
+          Kokkos::atomic_add(&s_candidate_vectors(si, offset + ri),
+                             nbh_der * d_radial_jacobian(ii, k, ri));
+        }
 
-  // Store the species der
-  Kokkos::single(Kokkos::PerTeam(team), [&]() {
-    s_candidate_vector(radial_coeff_count + itype) = 1;
-  });
+        if (k == 0) {    //Set the species constant using the first subteam member
+          s_candidate_vectors(si, radial_coeff_count + itype) = 1.0;
+          s_nbh_grades(si) = 0;    //Set the inital nbh grades to 0 too.
+        }
+      });
+
+  const int moment_offset = radial_coeff_count + species_count;
+  Kokkos::parallel_for(
+      Kokkos::TeamThreadMDRange<Kokkos::Rank<2>,
+                                typename Kokkos::TeamPolicy<DeviceType>::member_type>(
+          team, sub_team_count, alpha_scalar_count),
+      [&](const int si, const int ci) {
+        const int ii = si + team.league_rank() * sub_team_count;
+        if (ii >= chunk_size) return;
+        s_candidate_vectors(si, ci + moment_offset) =
+            d_moment_tensor_vals(ii, d_alpha_moment_mapping(ci));
+      });
 
   team.team_barrier();    // Barrier to ensure all data is loaded
 
-  // Now we can calculate the extrapolation grade with a parallel reduction
-  F_FLOAT nbh_grade = 0;
-
-  Kokkos::parallel_reduce(
-      Kokkos::TeamThreadRange(team, coeff_count),
-      [&](const int i, F_FLOAT &grade) {
+  // Now we can calculate the extrapolation grade per sub team
+  Kokkos::parallel_for(
+      Kokkos::TeamThreadMDRange<Kokkos::Rank<2>,
+                                typename Kokkos::TeamPolicy<DeviceType>::member_type>(
+          team, sub_team_count, coeff_count),
+      [&](const int si, const int ci) {
+        const int ii = si + team.league_rank() * sub_team_count;
+        if (ii >= chunk_size) return;
         F_FLOAT current_grade = 0;
         for (int j = 0; j < coeff_count; j++) {
-          current_grade += s_candidate_vector(j) * d_inverse_active_set(i, j);
+          current_grade += s_candidate_vectors(si, j) * d_inverse_active_set(ci, j);
         }
-        current_grade = Kokkos::abs(current_grade);
-        grade = (grade > current_grade) ? grade : current_grade;
-      },
-      Kokkos::Max<F_FLOAT, DeviceType>(nbh_grade));
+        Kokkos::atomic_max(&s_nbh_grades(si), Kokkos::abs(current_grade));
+      });
 
-  Kokkos::single(Kokkos::PerTeam(team), [&]() {
-    d_nbh_extrapolation_grades(i) = nbh_grade;
-    nbh_max_grade = nbh_grade > nbh_max_grade ? nbh_grade : nbh_max_grade;
-  });
+  team.team_barrier();    // Barrier to ensure all grades are done
+
+  Kokkos::parallel_reduce(
+      Kokkos::TeamThreadRange(team, sub_team_count),
+      [&](const int si, F_FLOAT &grade) {
+        const int ii = si + team.league_rank() * sub_team_count;
+        if (ii >= chunk_size) return;
+        const int i = d_ilist(ii + chunk_offset);
+        F_FLOAT nbh_grade = s_nbh_grades(si);
+        d_nbh_extrapolation_grades(i) = nbh_grade;
+        grade = nbh_grade > grade ? nbh_grade : grade;
+      },
+      Kokkos::Max<F_FLOAT>(nbh_max_grade));
 }
 
 template <class DeviceType>

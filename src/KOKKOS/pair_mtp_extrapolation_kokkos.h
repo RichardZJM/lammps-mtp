@@ -231,6 +231,11 @@ template <class DeviceType> struct ComputeNbhGrades {
                        Kokkos::MemoryTraits<Kokkos::Unmanaged>>
       shared_double_1d;    // Used for storing coeff derivatives
 
+  typedef Kokkos::View<F_FLOAT **, typename DeviceType::scratch_memory_space,
+                       Kokkos::MemoryTraits<Kokkos::Unmanaged>>
+      shared_double_2d;    // Used for storing coeff derivatives
+
+  const int sub_team_count;
   const int chunk_size;
   const int chunk_offset;
   typename AT::t_int_1d_randomread d_ilist;
@@ -248,8 +253,10 @@ template <class DeviceType> struct ComputeNbhGrades {
   Kokkos::View<int *, DeviceType> d_alpha_moment_mapping;
   Kokkos::View<F_FLOAT **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set;
   Kokkos::View<F_FLOAT *, DeviceType> d_nbh_extrapolation_grades;
+  Kokkos::View<F_FLOAT *, DeviceType> d_temp;
 
-  ComputeNbhGrades(int chunk_size_, int chunk_offset_, typename AT::t_int_1d_randomread d_ilist_,
+  ComputeNbhGrades(int sub_team_count_, int chunk_size_, int chunk_offset_,
+                   typename AT::t_int_1d_randomread d_ilist_,
                    typename AT::t_int_1d_randomread type_, int species_count_,
                    int radial_coeff_count_, int alpha_index_basic_count_,
                    int radial_coeff_count_per_pair_, int alpha_scalar_count_, int coeff_count_,
@@ -258,16 +265,17 @@ template <class DeviceType> struct ComputeNbhGrades {
                    Kokkos::View<F_FLOAT **, DeviceType> d_moment_tensor_vals_,
                    Kokkos::View<int *, DeviceType> d_alpha_moment_mapping_,
                    Kokkos::View<F_FLOAT **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set_,
-                   Kokkos::View<F_FLOAT *, DeviceType> d_nbh_extrapolation_grades_) :
-      chunk_size(chunk_size_), chunk_offset(chunk_offset_), d_ilist(d_ilist_), type(type_),
-      species_count(species_count_), radial_coeff_count(radial_coeff_count_),
-      alpha_index_basic_count(alpha_index_basic_count_),
+                   Kokkos::View<F_FLOAT *, DeviceType> d_nbh_extrapolation_grades_,
+                   Kokkos::View<F_FLOAT *, DeviceType> d_temp_) :
+      sub_team_count(sub_team_count_), chunk_size(chunk_size_), chunk_offset(chunk_offset_),
+      d_ilist(d_ilist_), type(type_), species_count(species_count_),
+      radial_coeff_count(radial_coeff_count_), alpha_index_basic_count(alpha_index_basic_count_),
       radial_coeff_count_per_pair(radial_coeff_count_per_pair_),
       alpha_scalar_count(alpha_scalar_count_), coeff_count(coeff_count_),
       d_nbh_energy_ders_wrt_moments(d_nbh_energy_ders_wrt_moments_),
       d_radial_jacobian(d_radial_jacobian_), d_moment_tensor_vals(d_moment_tensor_vals_),
       d_alpha_moment_mapping(d_alpha_moment_mapping_), d_inverse_active_set(d_inverse_active_set_),
-      d_nbh_extrapolation_grades(d_nbh_extrapolation_grades_)
+      d_nbh_extrapolation_grades(d_nbh_extrapolation_grades_), d_temp(d_temp_)
   {
   }
 
