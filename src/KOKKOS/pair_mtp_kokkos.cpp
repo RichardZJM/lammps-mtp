@@ -114,7 +114,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
     error->all(FLERR,
                "Pair mtp/kk requires 3 arguments {{potential_file} \"chunksize\" {chunksize}}.");
 
-  chunk_size = utils::inumeric(FLERR, arg[2], true, lmp);
+  input_chunk_size = utils::inumeric(FLERR, arg[2], true, lmp);
 
   PairMTP ::settings(
       1, arg);    // This also calls read_file which parses and loads the necessary arrays in host
@@ -257,8 +257,9 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
                           FindMaxNumNeighs<DeviceType>(k_list), Kokkos::Max<int>(max_neighs));
 
   // Handling batching
-  chunk_size =
-      MIN(chunk_size, inum);    // chunksize is the maximum atoms per pass as defined by the user
+  chunk_size =    // chunk_size is the working chunk size and may change per compute pass
+      MIN(input_chunk_size,
+          inum);    // chunksize is the maximum atoms per pass as defined by the user
   chunk_offset = 0;
 
   // Team sizes. We specify 32 for 1 warp per thread block.
@@ -288,7 +289,6 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   while (chunk_offset < inum) {    // batching to prevent OOM on device
     EV_FLOAT ev_tmp;
     if (chunk_size > inum - chunk_offset) chunk_size = inum - chunk_offset;
-
     // ========== Init working views as 0  ==========
     {
 
@@ -302,7 +302,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       int team_size = team_size_default;
       // if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
-      int team_count = chunk_size / team_size + 1;
+      int team_count = (chunk_size - 1) / team_size + 1;
       check_team_size_for<TagPairMTPComputeAlphaBasic>(team_count, team_size, vector_length);
       int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
       int dist_coords_scratch_count = 4 * max_alpha_index_basic;

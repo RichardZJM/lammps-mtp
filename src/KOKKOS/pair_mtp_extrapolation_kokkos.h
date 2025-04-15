@@ -143,7 +143,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   //       double &cfg_max_grade) const;
 
  protected:
-  int chunk_size,
+  int input_chunk_size, chunk_size,
       chunk_offset;    // Needed to process the computation in batches to avoid running out of VRAM.
 
   int inum, max_neighs;

@@ -103,7 +103,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
              EV_FLOAT &) const;    // With global energy reduction as needed
 
  protected:
-  int chunk_size,
+  int input_chunk_size, chunk_size,
       chunk_offset;    // Needed to process the computation in batches to avoid running out of VRAM.
 
   // Characteric flags

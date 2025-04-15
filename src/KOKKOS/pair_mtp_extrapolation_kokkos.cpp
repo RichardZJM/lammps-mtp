@@ -127,7 +127,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   if (LAMMPS_NS::utils::lowercase(arg[6]) != "chunksize")
     error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}");
 
-  chunk_size = utils::inumeric(FLERR, arg[7], true, lmp);
+  input_chunk_size = utils::inumeric(FLERR, arg[7], true, lmp);
 
   // This also calls read_file which parses and loads the necessary arrays in host
   PairMTPExtrapolation::settings(6, arg);
@@ -338,8 +338,8 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
                           FindMaxNumNeighs<DeviceType>(k_list), Kokkos::Max<int>(max_neighs));
 
   // Handling batching
-  chunk_size =
-      MIN(chunk_size, inum);    // chunksize is the maximum atoms per pass as defined by the user
+  chunk_size = MIN(input_chunk_size,
+                   inum);    // chunksize is the maximum atoms per pass as defined by the user
   chunk_offset = 0;
 
   // Team sizes. We specify 32 for 1 warp per thread block.
@@ -1096,9 +1096,11 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
   // First calculate the radial ders and store into shared memory
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, alpha_index_basic_count), [&](const int k) {
     int offset = itype * species_count * radial_coeff_count_per_pair;
-    for (int ri = 0; ri < radial_coeff_count_per_pair * species_count; ri++)
+    for (int rii = k; rii < (radial_coeff_count_per_pair * species_count) + k; rii++) {
+      int ri = rii % (radial_coeff_count_per_pair * species_count);
       Kokkos::atomic_add(&s_candidate_vector(offset + ri),
                          d_nbh_energy_ders_wrt_moments(ii, k) * d_radial_jacobian(ii, k, ri));
+    }
   });
 
   // Load the basis vals into shared memory
