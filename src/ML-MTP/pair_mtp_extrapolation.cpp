@@ -109,7 +109,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
     // Resize the jacobian and cutoff if needed. No need to initialize, first access is write
     if (jac_size < jnum) {
-      memory->grow(moment_jacobian, alpha_index_basic_count, jnum, 3, "moment_jacobian");
+      memory->grow(moment_jacobian, jnum, alpha_index_basic_count, 3, "moment_jacobian");
       memory->grow(within_cutoff, jnum, "within_cutoff");
       jac_size = jnum;
     }
@@ -189,20 +189,20 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 
         // Get the component's derivatives too
         pow *= der / dist;
-        moment_jacobian[k][jj][0] = pow * r[0];
-        moment_jacobian[k][jj][1] = pow * r[1];
-        moment_jacobian[k][jj][2] = pow * r[2];
+        moment_jacobian[jj][k][0] = pow * r[0];
+        moment_jacobian[jj][k][1] = pow * r[1];
+        moment_jacobian[jj][k][2] = pow * r[2];
 
         if (alpha_index_basic[k][1] != 0) {
-          moment_jacobian[k][jj][0] += val * alpha_index_basic[k][1] *
+          moment_jacobian[jj][k][0] += val * alpha_index_basic[k][1] *
               coord_powers[alpha_index_basic[k][1] - 1][0] * pow1 * pow2;
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][2] != 0) {
-          moment_jacobian[k][jj][1] += val * alpha_index_basic[k][2] * pow0 *
+          moment_jacobian[jj][k][1] += val * alpha_index_basic[k][2] * pow0 *
               coord_powers[alpha_index_basic[k][2] - 1][1] * pow2;
         }    //Chain rule for nonzero rank
         if (alpha_index_basic[k][3] != 0) {
-          moment_jacobian[k][jj][2] += val * alpha_index_basic[k][3] * pow0 * pow1 *
+          moment_jacobian[jj][k][2] += val * alpha_index_basic[k][3] * pow0 * pow1 *
               coord_powers[alpha_index_basic[k][3] - 1][2];
         }    //Chain rule for nonzero rank
       }
@@ -269,7 +269,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         // Backprop relative to positions for forces
         for (int a = 0; a < 3; a++) {
           //Calculate forces
-          temp_force[a] += nbh_energy_ders_wrt_moments[k] * moment_jacobian[k][jj][a];
+          temp_force[a] += nbh_energy_ders_wrt_moments[k] * moment_jacobian[jj][k][a];
         }
       }
 
