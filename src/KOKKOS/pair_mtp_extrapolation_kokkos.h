@@ -175,8 +175,8 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   Kokkos::View<double *, DeviceType> d_species_coeffs;         // The species-based constants
   Kokkos::View<double *, DeviceType> d_linear_coeffs;          // Basis coeffs
 
-  // Inverse active set and grades. Only needed in neigbhourhood mode.
-  Kokkos::View<double **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set;
+  // Inverse active set and grades. Only needed in neigbhourhood mode and single MPI configuration mode.
+  Kokkos::View<double **, DeviceType> d_inverse_active_set;
   Kokkos::View<double *, DeviceType> d_nbh_extrapolation_grades;
 
   // Source for candidate vector reduction. Only needed in configuration mode.
@@ -246,7 +246,7 @@ template <class DeviceType> struct ComputeNbhGrades {
   Kokkos::View<F_FLOAT ***, DeviceType> d_radial_jacobian;
   Kokkos::View<F_FLOAT **, DeviceType> d_moment_tensor_vals;
   Kokkos::View<int *, DeviceType> d_alpha_moment_mapping;
-  Kokkos::View<F_FLOAT **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set;
+  Kokkos::View<F_FLOAT **, DeviceType> d_inverse_active_set;
   Kokkos::View<F_FLOAT *, DeviceType> d_nbh_extrapolation_grades;
 
   ComputeNbhGrades(int chunk_size_, int chunk_offset_, typename AT::t_int_1d_randomread d_ilist_,
@@ -257,7 +257,7 @@ template <class DeviceType> struct ComputeNbhGrades {
                    Kokkos::View<F_FLOAT ***, DeviceType> d_radial_jacobian_,
                    Kokkos::View<F_FLOAT **, DeviceType> d_moment_tensor_vals_,
                    Kokkos::View<int *, DeviceType> d_alpha_moment_mapping_,
-                   Kokkos::View<F_FLOAT **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set_,
+                   Kokkos::View<F_FLOAT **, DeviceType> d_inverse_active_set_,
                    Kokkos::View<F_FLOAT *, DeviceType> d_nbh_extrapolation_grades_) :
       chunk_size(chunk_size_), chunk_offset(chunk_offset_), d_ilist(d_ilist_), type(type_),
       species_count(species_count_), radial_coeff_count(radial_coeff_count_),
@@ -282,10 +282,10 @@ template <class DeviceType> struct ComputeCfgGrade {
 
   const int coeff_count;
   Kokkos::View<F_FLOAT *, DeviceType> d_energy_ders_wrt_coeffs;
-  Kokkos::View<F_FLOAT **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set;
+  Kokkos::View<F_FLOAT **, DeviceType> d_inverse_active_set;
 
   ComputeCfgGrade(int coeff_count_, Kokkos::View<F_FLOAT *, DeviceType> d_energy_ders_wrt_coeffs_,
-                  Kokkos::View<F_FLOAT **, Kokkos::LayoutRight, DeviceType> d_inverse_active_set_) :
+                  Kokkos::View<F_FLOAT **, DeviceType> d_inverse_active_set_) :
       coeff_count(coeff_count_), d_energy_ders_wrt_coeffs(d_energy_ders_wrt_coeffs_),
       d_inverse_active_set(d_inverse_active_set_)
   {
