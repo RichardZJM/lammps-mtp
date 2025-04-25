@@ -44,13 +44,13 @@ class PairMTPExtrapolation : public PairMTP {
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 
-  bool save_configs;         // Whether we write configs above the select threshold
-  bool pool_grades;          // Is configuration mode?
-  int sampling_frequency;    // Sample frequency, default of 1
-  int steps_since_last_sample = 0;
-  double select_threshold;    // Grade threshold for selection
-  double break_threshold;     // Grade threshold for termination
-  double max_grade;           // Grade of current iteration
+  bool save_configs;              // Whether we write configs above the select threshold
+  bool pool_grades;               // Is configuration mode?
+  int sampling_frequency;         // Sample frequency, default of 1
+  int steps_since_last_sample;    // Steps since last sample
+  double select_threshold;        // Grade threshold for selection
+  double break_threshold;         // Grade threshold for termination
+  double max_grade;               // Grade of current iteration
 
   // Active set
   double **active_set;            // Current active set

@@ -64,9 +64,9 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
   steps_since_last_sample++;
   if (steps_since_last_sample < sampling_frequency) {
     PairMTP::compute(eflag, vflag);
-    steps_since_last_sample = 0;
     return;
   }
+  steps_since_last_sample = 0;
 
   max_grade = 0;
 
@@ -498,6 +498,7 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   select_threshold = utils::numeric(FLERR, arg[2], true, lmp);
   break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
   sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
+  steps_since_last_sample = sampling_frequency;    // Force the first sample to be taken
   save_configs = LAMMPS_NS::utils::lowercase(arg[5]) != "none";
 
   if (comm->me == 0)

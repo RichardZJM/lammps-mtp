@@ -266,7 +266,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   // Maybe need 64 for AMD?
   int team_size_default = 1;
   int vector_length_default = 1;
-  if (!host_flag) team_size_default = 64;
+  if (!host_flag) team_size_default = 32;
 
   // Resize the arrays to the chunksize if needed. Do not initialize values, we do so in the loop.
   if ((int) d_moment_tensor_vals.extent(0) < chunk_size) {
@@ -300,7 +300,6 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
       int team_size = team_size_default;
-      // if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
       int team_count = (chunk_size - 1) / team_size + 1;
       check_team_size_for<TagPairMTPComputeAlphaBasic>(team_count, team_size, vector_length);
@@ -413,7 +412,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPInit
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
 }
 
-// Calculates the basic alphas
+// Calculates the basic alphas using fused operations where possible
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     TagPairMTPComputeAlphaBasic,
@@ -429,7 +428,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     // Extract the atom number
     int ii = team.league_rank() * team.team_size() + team.team_rank();
     if (ii >= chunk_size) return;
-    // Get information about the central atom
+    // Get central atom info
     const int i = d_ilist[ii + chunk_offset];
     const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
     const int itype = type[i] - 1;    // switch to zero indexing
@@ -438,19 +437,23 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
     for (int jj = 0; jj < jnum; jj++) {
       const int j = d_neighbors(i, jj) & NEIGHMASK;
       const int jtype = type[j] - 1;    // switch to zero indexing
-      const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
-      const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+      const F_FLOAT r[3] = {Kokkos::fma(-1.0, xi[0], x(j, 0)), Kokkos::fma(-1.0, xi[1], x(j, 1)),
+                            Kokkos::fma(-1.0, xi[2], x(j, 2))};
+      // Calculate squared distance using fused operations
+      const F_FLOAT rsq = Kokkos::fma(r[0], r[0], Kokkos::fma(r[1], r[1], r[2] * r[2]));
 
       const bool valid_pair = rsq < max_cutoff_sq;
       d_within_cutoff(ii, jj) = valid_pair;
-
       if (!valid_pair) continue;
-      const F_FLOAT dist = sqrt(rsq);
+      const F_FLOAT dist = Kokkos::sqrt(rsq);
 
-      s_dist_powers(iii, 0) = s_coord_powers(iii, 0, 0) = s_coord_powers(iii, 0, 1) =
-          s_coord_powers(iii, 0, 2) = 1;    // Set the constants
+      // Initialize power arrays
+      s_dist_powers(iii, 0) = 1.0;
+      s_coord_powers(iii, 0, 0) = 1.0;
+      s_coord_powers(iii, 0, 1) = 1.0;
+      s_coord_powers(iii, 0, 2) = 1.0;
 
-      // Precompute the coord and distance power
+      // Precompute coordinate and distance powers
       for (int k = 1; k < max_alpha_index_basic; k++) {
         s_dist_powers(iii, k) = s_dist_powers(iii, k - 1) * dist;
         for (int a = 0; a < 3; a++)
@@ -458,71 +461,80 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       }
 
       // ---------- Calculate the radial basis functions ----------
-      // Currently, I just have it hard coded for Rb_Chebyshev. I'll need to implement a way to handle different radial basis sets in kokkos
-
-      // Calculate the radial basis and store in shared memory
       F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
-      F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
+      // Use fma to compute the numerator for ksi: (2.0 * dist - (min_cutoff+max_cutoff))
+      F_FLOAT ksi = Kokkos::fma(2.0, dist, -(min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
+      const F_FLOAT temp = dist - max_cutoff;
+      // For the first two basis functions, precompute the common product
+      s_radial_basis_vals(iii, 0) = Kokkos::fma(scaling, temp * temp, 0.0);
+      s_radial_basis_vals(iii, 1) = Kokkos::fma(scaling, ksi * temp * temp, 0.0);
 
-      s_radial_basis_vals(iii, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
-      s_radial_basis_vals(iii, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+      // Use fused multiply–add for the recursive relation
       for (int k = 2; k < radial_basis_size; k++) {
-        s_radial_basis_vals(iii, k) =
-            2 * ksi * s_radial_basis_vals(iii, k - 1) - s_radial_basis_vals(iii, k - 2);
+        s_radial_basis_vals(iii, k) = Kokkos::fma(2.0 * ksi, s_radial_basis_vals(iii, k - 1),
+                                                  -s_radial_basis_vals(iii, k - 2));
       }
 
-      // Do the same with the derivatives
-      s_radial_basis_ders(iii, 0) = scaling * 2 * (dist - max_cutoff);
-      s_radial_basis_ders(iii, 1) = scaling *
-          (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
+      // Derivatives of the radial basis functions
+      s_radial_basis_ders(iii, 0) = Kokkos::fma(scaling, 2.0 * temp, 0.0);
+      s_radial_basis_ders(iii, 1) =
+          Kokkos::fma(scaling, Kokkos::fma(mult, temp * temp, 2.0 * ksi * temp), 0.0);
       for (int k = 2; k < radial_basis_size; k++) {
-        s_radial_basis_ders(iii, k) =
-            2 * (mult * s_radial_basis_vals(iii, k - 1) + ksi * s_radial_basis_ders(iii, k - 1)) -
-            s_radial_basis_ders(iii, k - 2);
+        F_FLOAT tmp = Kokkos::fma(mult, s_radial_basis_vals(iii, k - 1),
+                                  ksi * s_radial_basis_ders(iii, k - 1));
+        s_radial_basis_ders(iii, k) = Kokkos::fma(2.0, tmp, -s_radial_basis_ders(iii, k - 2));
       }
-      //Now, we loop through all the basic alphas
+
+      // Loop over basic alphas
       for (int k = 0; k < alpha_index_basic_count; k++) {
-
-        F_FLOAT val = 0;
-        F_FLOAT der = 0;
+        F_FLOAT val = 0.0;
+        F_FLOAT der = 0.0;
         int mu = d_alpha_index_basic(k, 0);
         int a0 = d_alpha_index_basic(k, 1);
         int a1 = d_alpha_index_basic(k, 2);
         int a2 = d_alpha_index_basic(k, 3);
 
-        //Find the offset for the radial basis coeffs
+        // Compute offset for radial basis coefficients
         int pair_offset = itype * species_count + jtype;
         int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
 
-        // Find the radial component and its derivative
+        // Accumulate radial components using fused multiply–add
         for (int ri = 0; ri < radial_basis_size; ri++) {
-          val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(iii, ri);
-          der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(iii, ri);
+          val = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_vals(iii, ri), val);
+          der = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_ders(iii, ri), der);
         }
 
-        // Normalize by the rank of alpha's coresponding tensor
+        // Normalize by the rank of alpha's corresponding tensor
         int norm_rank = a0 + a1 + a2;
         F_FLOAT norm_fac = 1.0 / s_dist_powers(iii, norm_rank);
         val *= norm_fac;
-        der = der * norm_fac - norm_rank * val / dist;
+        der = Kokkos::fma(norm_fac, der, -norm_rank * val / dist);
 
         F_FLOAT pow0 = s_coord_powers(iii, a0, 0);
         F_FLOAT pow1 = s_coord_powers(iii, a1, 1);
         F_FLOAT pow2 = s_coord_powers(iii, a2, 2);
         F_FLOAT pow = pow0 * pow1 * pow2;
-        d_moment_tensor_vals(ii, k) += val * pow;
+        d_moment_tensor_vals(ii, k) = Kokkos::fma(val, pow, d_moment_tensor_vals(ii, k));
 
-        // Get the component's derivatives too
+        // Compute derivatives (jacobian)
         F_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
-
         pow *= der / dist;
         temp_jac[0] = pow * r[0];
         temp_jac[1] = pow * r[1];
         temp_jac[2] = pow * r[2];
 
-        if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(iii, a0 - 1, 0) * pow1 * pow2;
-        if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(iii, a1 - 1, 1) * pow2;
-        if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(iii, a2 - 1, 2);
+        if (a0 != 0) {
+          temp_jac[0] =
+              Kokkos::fma(val * a0, s_coord_powers(iii, a0 - 1, 0) * pow1 * pow2, temp_jac[0]);
+        }
+        if (a1 != 0) {
+          temp_jac[1] =
+              Kokkos::fma(val * a1, pow0 * s_coord_powers(iii, a1 - 1, 1) * pow2, temp_jac[1]);
+        }
+        if (a2 != 0) {
+          temp_jac[2] =
+              Kokkos::fma(val * a2, pow0 * pow1 * s_coord_powers(iii, a2 - 1, 2), temp_jac[2]);
+        }
 
         d_moment_jacobian(ii, jj, k, 0) = temp_jac[0];
         d_moment_jacobian(ii, jj, k, 1) = temp_jac[1];
@@ -541,13 +553,13 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
   for (int k = 0; k < alpha_index_times_count; k++) {
     int a0 = d_alpha_index_times(k, 0);
     int a1 = d_alpha_index_times(k, 1);
-    int multipiler = d_alpha_index_times(k, 2);
+    int mult = d_alpha_index_times(k, 2);
     int a3 = d_alpha_index_times(k, 3);
 
     F_FLOAT val0 = d_moment_tensor_vals(ii, a0);
     F_FLOAT val1 = d_moment_tensor_vals(ii, a1);
 
-    d_moment_tensor_vals(ii, a3) += multipiler * val0 * val1;
+    d_moment_tensor_vals(ii, a3) += mult * val0 * val1;
   }
 }
 
@@ -566,15 +578,15 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(TagPairMTPComp
   for (int k = alpha_index_times_count - 1; k >= 0; k--) {
     int a0 = d_alpha_index_times(k, 0);
     int a1 = d_alpha_index_times(k, 1);
-    int multipiler = d_alpha_index_times(k, 2);
+    int mult = d_alpha_index_times(k, 2);
     int a3 = d_alpha_index_times(k, 3);
 
     F_FLOAT val0 = d_moment_tensor_vals(ii, a0);
     F_FLOAT val1 = d_moment_tensor_vals(ii, a1);
     F_FLOAT val3 = d_nbh_energy_ders_wrt_moments(ii, a3);
 
-    d_nbh_energy_ders_wrt_moments(ii, a1) += val3 * multipiler * val0;
-    d_nbh_energy_ders_wrt_moments(ii, a0) += val3 * multipiler * val1;
+    d_nbh_energy_ders_wrt_moments(ii, a1) += val3 * mult * val0;
+    d_nbh_energy_ders_wrt_moments(ii, a0) += val3 * mult * val1;
   }
 }
 
