@@ -588,6 +588,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       Kokkos::deep_copy(h_energy_ders_wrt_coeffs, d_energy_ders_wrt_coeffs);
 
       PairMTPExtrapolation::compile_grades();
+      // We perform the grade calc after MPI on CPU due to transfer overhead.
       max_grade = PairMTPExtrapolation::calculate_extrapolation_grade();
     }    // Normalize by atom count in CFG mode
   } else {    // Neighbourhood mode
@@ -1159,7 +1160,7 @@ KOKKOS_INLINE_FUNCTION void ComputeNbhGrades<DeviceType>::operator()(
 
   Kokkos::single(Kokkos::PerTeam(team), [&]() {
     d_nbh_extrapolation_grades(i) = nbh_grade;
-    nbh_max_grade = nbh_grade > nbh_max_grade ? nbh_grade : nbh_max_grade;
+    nbh_max_grade = Kokkos::max(nbh_grade, nbh_max_grade);
   });
 }
 
@@ -1175,13 +1176,13 @@ KOKKOS_INLINE_FUNCTION void ComputeCfgGrade<DeviceType>::operator()(
   Kokkos::parallel_reduce(
       Kokkos::TeamThreadRange(team, coeff_count),
       [&](const int jk, F_FLOAT &grade) {
-        grade += d_energy_ders_wrt_coeffs(jk) * d_inverse_active_set(ik, jk);
+        grade = Kokkos::fma(d_energy_ders_wrt_coeffs(jk), d_inverse_active_set(ik, jk), grade);
       },
       candidate_grade);
   candidate_grade = Kokkos::abs(candidate_grade);
 
   Kokkos::single(Kokkos::PerTeam(team), [&]() {
-    cfg_max_grade = (candidate_grade < cfg_max_grade) ? cfg_max_grade : candidate_grade;
+    cfg_max_grade = Kokkos::max(candidate_grade, cfg_max_grade);
   });
 }
 
