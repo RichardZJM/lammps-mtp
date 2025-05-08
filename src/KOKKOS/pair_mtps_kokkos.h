@@ -56,6 +56,7 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
   void coeff(int, char **) override;
   void init_style() override;
   double init_one(int, int) override;
+  void prepare_waves();    //Precalculates the waves of alpha times by dependency
 
   // ========== Kokkos kernels ==========
   //Utility routines
@@ -84,13 +85,19 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
           &team) const;
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPsComputeAlphaTimes, const int &ii) const;
+  void operator()(
+      TagPairMTPsComputeAlphaTimes,
+      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaTimes>::member_type
+          &team) const;
 
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPsSetScalarNbhDers, const int &ii, const int &k) const;
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPsComputeNbhDers, const int &ii) const;
+  void
+  operator()(TagPairMTPsComputeNbhDers,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeNbhDers>::member_type
+                 &team) const;
 
   template <int NEIGHFLAG, int EVFLAG>
   KOKKOS_INLINE_FUNCTION void
@@ -102,6 +109,10 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
  protected:
   int input_chunk_size, chunk_size,
       chunk_offset;    // Needed to process the computation in batches to avoid running out of VRAM.
+
+  // The size of the waves for alpha times. The MTP has a maximum of 3 waves.
+  int wave_sizes[3] = {0};
+  int offsets[3] = {0};
 
   // Characteric flags
   int inum, max_neighs;
@@ -135,8 +146,9 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
 
   // Global working buffers.
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;
-  Kokkos::View<double **, DeviceType> d_moment_tensor_vals;
-  Kokkos::View<double **, DeviceType> d_nbh_energy_ders_wrt_moments;
+  Kokkos::View<double **, Kokkos::LayoutRight, DeviceType>
+      d_moment_tensor_vals;    // This promotes some memory coalescing
+  Kokkos::View<double **, Kokkos::LayoutRight, DeviceType> d_nbh_energy_ders_wrt_moments;
   Kokkos::View<bool **, DeviceType> d_within_cutoff;
 
   // Typedefs for shared memory
