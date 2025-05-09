@@ -120,9 +120,9 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
 
   if (narg != 8)
     error->all(FLERR,
-               "Pair mtp/extrapolation requires 8 arguments: {potential_file} "
+               "Pair mtp/extrapolation/kk requires 8 arguments: {potential_file} "
                "{extrapolation_mode} {selection_threshold} {break_threshold} "
-               "{sampling_frequency} {output_file} \"chunk_size\" {chunksize}");
+               "{sampling_frequency} {output_file} \"chunksize\" {chunksize}");
 
   if (LAMMPS_NS::utils::lowercase(arg[6]) != "chunksize")
     error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}");
@@ -346,7 +346,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   // Maybe need 64 for AMD?
   int team_size_default = 1;
   int vector_length_default = 1;
-  if (!host_flag) team_size_default = 32;
+  if (!host_flag) team_size_default = 64;
 
   // Resize the arrays to the chunksize if needed. Do not initialize values, we do so in the loop.
   if ((int) d_moment_tensor_vals.extent(0) < chunk_size) {
@@ -389,8 +389,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       if (calculate_grade_this_step) {
         typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitRadJacobian>
             policy_rad_jac_init({0, 0}, {chunk_size, alpha_index_basic_count});
-        Kokkos::parallel_for("InitRadJacobian", policy_rad_jac_init,
-                             *this);    // This kernel also inits the below
+        Kokkos::parallel_for("InitRadJacobian", policy_rad_jac_init, *this);
       }
       typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
           policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
@@ -400,27 +399,27 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
       int team_size = team_size_default;
+      if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
-
+      int team_count = (chunk_size - 1) / team_size + 1;
       // Only calculate the radial jacobian on steps extrapolation is needed
       if (calculate_grade_this_step) {
-        check_team_size_for<TagPairMTPComputeAlphaBasicRad>(chunk_size, team_size, vector_length);
+        check_team_size_for<TagPairMTPComputeAlphaBasicRad>(team_count, team_size, vector_length);
         int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
         int dist_coords_scratch_count = 4 * max_alpha_index_basic;
         int scratch_size = scratch_size_helper<F_FLOAT>(
             team_size * (radial_scratch_count + dist_coords_scratch_count));
-        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicRad> policy_basic_alpha_rad(
-            chunk_size, team_size);
-        policy_basic_alpha_rad =
-            policy_basic_alpha_rad.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
-        Kokkos::parallel_for("ComputeAlphaBasicRad", policy_basic_alpha_rad, *this);
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicRad> policy_basic_alpha(
+            team_count, team_size);
+        policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_for("ComputeAlphaBasicRad", policy_basic_alpha, *this);
       } else {
-        check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size, team_size, vector_length);
+        check_team_size_for<TagPairMTPComputeAlphaBasic>(team_count, team_size, vector_length);
         int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
         int dist_coords_scratch_count = 4 * max_alpha_index_basic;
         int scratch_size = scratch_size_helper<F_FLOAT>(
             team_size * (radial_scratch_count + dist_coords_scratch_count));
-        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(team_count,
                                                                                        team_size);
         policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
         Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
