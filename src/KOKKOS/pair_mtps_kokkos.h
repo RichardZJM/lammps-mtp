@@ -36,12 +36,12 @@ namespace LAMMPS_NS {
 template <class DeviceType> class PairMTPsKokkos : public PairMTP {
  public:
   // Structs for kernels
-  struct TagPairMTPsInitMomentValsDers {};
-  struct TagPairMTPsComputeAlphaBasic {};
-  struct TagPairMTPsComputeAlphaTimes {};
-  struct TagPairMTPsSetScalarNbhDers {};
-  struct TagPairMTPsComputeNbhDers {};
-  template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPsComputeForce {};
+  struct TagPairMTPInitMomentValsDers {};
+  struct TagPairMTPComputeAlphaBasic {};
+  struct TagPairMTPComputeAlphaTimes {};
+  struct TagPairMTPSetScalarNbhDers {};
+  struct TagPairMTPComputeNbhDers {};
+  template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
   enum { COUL_FLAG = 0 };
@@ -75,35 +75,35 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
 
   //Kernels for initing working views
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPsInitMomentValsDers, const int &k, const int &ii) const;
+  void operator()(TagPairMTPInitMomentValsDers, const int &k, const int &ii) const;
 
   // Kernels for computation
   KOKKOS_INLINE_FUNCTION
-  void operator()(
-      TagPairMTPsComputeAlphaBasic,
-      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaBasic>::member_type
-          &team) const;
-
-  KOKKOS_INLINE_FUNCTION
-  void operator()(
-      TagPairMTPsComputeAlphaTimes,
-      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaTimes>::member_type
-          &team) const;
-
-  KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPsSetScalarNbhDers, const int &k, const int &ii) const;
+  void
+  operator()(TagPairMTPComputeAlphaBasic,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type
+                 &team) const;
 
   KOKKOS_INLINE_FUNCTION
   void
-  operator()(TagPairMTPsComputeNbhDers,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeNbhDers>::member_type
+  operator()(TagPairMTPComputeAlphaTimes,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaTimes>::member_type
+                 &team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(TagPairMTPSetScalarNbhDers, const int &k, const int &ii) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void
+  operator()(TagPairMTPComputeNbhDers,
+             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhDers>::member_type
                  &team) const;
 
   template <int NEIGHFLAG, int EVFLAG>
   KOKKOS_INLINE_FUNCTION void
-  operator()(const TagPairMTPsComputeForce<NEIGHFLAG, EVFLAG> &,
+  operator()(const TagPairMTPComputeForce<NEIGHFLAG, EVFLAG> &,
              const typename Kokkos::TeamPolicy<
-                 DeviceType, TagPairMTPsComputeForce<NEIGHFLAG, EVFLAG>>::member_type &team,
+                 DeviceType, TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>>::member_type &team,
              EV_FLOAT &ev) const;
 
  protected:

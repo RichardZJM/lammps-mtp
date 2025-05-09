@@ -63,7 +63,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::init_style()
 {
   if (host_flag) {
     if (lmp->kokkos->nthreads > 1)
-      error->all(FLERR, "Pair style mtp/kk can currently only run on a single CPU thread.");
+      error->all(FLERR, "Pair style mtp/kk/s can currently only run on a single CPU thread.");
 
     PairMTP::init_style();
     return;
@@ -78,7 +78,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::init_style()
   request->set_kokkos_host(std::is_same_v<DeviceType, LMPHostType> &&
                            !std::is_same_v<DeviceType, LMPDeviceType>);
   request->set_kokkos_device(std::is_same_v<DeviceType, LMPDeviceType>);
-  if (neighflag == FULL) error->all(FLERR, "Must use half neighbor list style with pair mtp/kk.");
+  if (neighflag == FULL) error->all(FLERR, "Must use half neighbor list style with pair mtp/kk/s.");
 }
 
 /* ----------------------------------------------------------------------
@@ -135,11 +135,10 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::settings(int narg, 
   MemKK::realloc_kokkos(d_species_coeffs, "mtp/kk/s:species_coeffs", species_count);
   MemKK::realloc_kokkos(d_linear_coeffs, "mtp/kk/s:linear_coeffs", alpha_scalar_count);
 
-  //Setup the working arrays. It might be preferable for these to be scatter view
   // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum. We will resize these as needed in compute.
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk/s:moment_jacobian", 1, 1,
                         alpha_index_basic_count, 3);
-  MemKK::realloc_kokkos(d_within_cutoff, "mtp/kk/s:within_cutoff", 1);
+  MemKK::realloc_kokkos(d_within_cutoff, "mtp/kk/s:within_cutoff", 1, 1);
   MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk/s:moment_tensor_vals", 1, alpha_moment_count);
   MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments, "mtp/kk/s:nbh_energy_ders_wrt_moments", 1,
                         alpha_moment_count);
@@ -316,8 +315,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     if (chunk_size > inum - chunk_offset) chunk_size = inum - chunk_offset;
     // ========== Init working views as 0  ==========
     {
-
-      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPsInitMomentValsDers>
+      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPInitMomentValsDers>
           policy_moment_init({0, 0}, {alpha_moment_count, chunk_size});
       Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
     }
@@ -329,15 +327,15 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
       int team_size = team_size_default;
       if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
-      check_team_size_for<TagPairMTPsComputeAlphaBasic>(chunk_size * max_neighs, team_size,
-                                                        vector_length);
+      check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size * max_neighs, team_size,
+                                                       vector_length);
 
       int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
       int dist_coords_scratch_count = 4 * max_alpha_index_basic;
       int scratch_size = scratch_size_helper<F_FLOAT>(
-          team_size * (radial_scratch_count + dist_coords_scratch_count));
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaBasic> policy_basic_alpha(chunk_size,
-                                                                                      team_size);
+          min(team_size, max_neighs) * (radial_scratch_count + dist_coords_scratch_count));
+      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
+                                                                                     team_size);
       policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
       Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
     }
@@ -346,14 +344,14 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     {
       int team_size = team_size_default;
       // Best team size depends on the max number of blocks per SM. 64 is good for CC8, and CC > 9+.
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaTimes> policy_basic_alpha(chunk_size,
-                                                                                      team_size);
+      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaTimes> policy_basic_alpha(chunk_size,
+                                                                                     team_size);
       Kokkos::parallel_for("ComputeAlphaTimes", policy_basic_alpha, *this);
     }
 
     // ========== Set the scalar nbh ders wrt moments ==========
     {
-      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPsSetScalarNbhDers>
+      typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPSetScalarNbhDers>
           policy_nbh_init({0, 0}, {alpha_scalar_count, chunk_size});
       Kokkos::parallel_for("SetScalarNbhDers", policy_nbh_init, *this);
     }
@@ -362,8 +360,8 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     {
       int team_size = team_size_default;
       // Best team size depends on the max number of blocks per SM. 64 is good for CC8, and CC > 9+.
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeNbhDers> policy_basic_alpha(chunk_size,
-                                                                                   team_size);
+      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhDers> policy_basic_alpha(chunk_size,
+                                                                                  team_size);
       Kokkos::parallel_for("ComputeNbhDers", policy_basic_alpha, *this);
     }
 
@@ -373,11 +371,11 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
       if (!host_flag && max_neighs < 32) team_size = 32;
 
       if (neighflag == HALF) {
-        Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeForce<HALF, 1>> policy_force(chunk_size,
-                                                                                      team_size);
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeForce<HALF, 1>> policy_force(chunk_size,
+                                                                                     team_size);
         Kokkos::parallel_reduce(policy_force, *this, ev_tmp);
       } else if (neighflag == HALFTHREAD) {
-        Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeForce<HALFTHREAD, 1>> policy_force(
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeForce<HALFTHREAD, 1>> policy_force(
             chunk_size, team_size);
         Kokkos::parallel_reduce(policy_force, *this, ev_tmp);
       }
@@ -429,7 +427,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
 
 // Inits the working arrays: moment and ders, jacobian not needed.
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPsInitMomentValsDers,
+KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPInitMomentValsDers,
                                                                    const int &k,
                                                                    const int &ii) const
 {
@@ -437,11 +435,11 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPsIn
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
 }
 
-// Calculates the basic alphas
+// Calculates the basic alphas using fused operations where possible
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
-    TagPairMTPsComputeAlphaBasic,
-    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaBasic>::member_type &team)
+    TagPairMTPComputeAlphaBasic,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type &team)
     const
 {
   // Extract the atom number
@@ -453,11 +451,12 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
   const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
   const int itype = type[i] - 1;    // switch to zero indexing
   const int jnum = d_numneigh(i);
+  const int array_size = Kokkos::min(team.team_size(), jnum);
 
-  shared_double_2d s_radial_basis_vals(team.team_scratch(0), team.team_size(), radial_basis_size);
-  shared_double_2d s_radial_basis_ders(team.team_scratch(0), team.team_size(), radial_basis_size);
-  shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
-  shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
+  shared_double_2d s_radial_basis_vals(team.team_scratch(0), array_size, radial_basis_size);
+  shared_double_2d s_radial_basis_ders(team.team_scratch(0), array_size, radial_basis_size);
+  shared_double_2d s_dist_powers(team.team_scratch(0), array_size, max_alpha_index_basic);
+  shared_double_3d s_coord_powers(team.team_scratch(0), array_size, max_alpha_index_basic);
 
   // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
@@ -558,11 +557,12 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
     }
   });
 }
+
 // Calculates the non-elementary alpha from the basic alphas
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
-    TagPairMTPsComputeAlphaTimes,
-    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaTimes>::member_type &team)
+    TagPairMTPComputeAlphaTimes,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaTimes>::member_type &team)
     const
 {
 
@@ -591,7 +591,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
 
 // Sets the nbh energy ders as the linear coeffs
 template <class DeviceType>
-KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPsSetScalarNbhDers,
+KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPSetScalarNbhDers,
                                                                    const int &k,
                                                                    const int &ii) const
 {
@@ -600,8 +600,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPsSe
 
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
-    TagPairMTPsComputeNbhDers,
-    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeNbhDers>::member_type &team)
+    TagPairMTPComputeNbhDers,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhDers>::member_type &team)
     const
 {
 
@@ -630,12 +630,13 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
   }
 }
 
+// Computes forces from jac and nbh ders
 template <class DeviceType>
 template <int NEIGHFLAG, int EVFLAG>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
-    const TagPairMTPsComputeForce<NEIGHFLAG, EVFLAG> &,    // Tag parameter added here
-    const typename Kokkos::TeamPolicy<
-        DeviceType, TagPairMTPsComputeForce<NEIGHFLAG, EVFLAG>>::member_type &team,
+    const TagPairMTPComputeForce<NEIGHFLAG, EVFLAG> &,    // Tag parameter added here
+    const typename Kokkos::TeamPolicy<DeviceType,
+                                      TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>>::member_type &team,
     EV_FLOAT &ev) const
 {
   // The f array is duplicated for OpenMP, atomic for GPU, and neither for Serial
