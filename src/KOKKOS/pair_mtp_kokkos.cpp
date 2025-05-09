@@ -439,7 +439,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       const int jtype = type[j] - 1;    // switch to zero indexing
       const F_FLOAT r[3] = {Kokkos::fma(-1.0, xi[0], x(j, 0)), Kokkos::fma(-1.0, xi[1], x(j, 1)),
                             Kokkos::fma(-1.0, xi[2], x(j, 2))};
-      // Calculate squared distance using fused operations
       const F_FLOAT rsq = Kokkos::fma(r[0], r[0], Kokkos::fma(r[1], r[1], r[2] * r[2]));
 
       const bool valid_pair = rsq < max_cutoff_sq;
@@ -462,14 +461,11 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
 
       // ---------- Calculate the radial basis functions ----------
       F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
-      // Use fma to compute the numerator for ksi: (2.0 * dist - (min_cutoff+max_cutoff))
       F_FLOAT ksi = Kokkos::fma(2.0, dist, -(min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
       const F_FLOAT temp = dist - max_cutoff;
-      // For the first two basis functions, precompute the common product
       s_radial_basis_vals(iii, 0) = Kokkos::fma(scaling, temp * temp, 0.0);
       s_radial_basis_vals(iii, 1) = Kokkos::fma(scaling, ksi * temp * temp, 0.0);
 
-      // Use fused multiply–add for the recursive relation
       for (int k = 2; k < radial_basis_size; k++) {
         s_radial_basis_vals(iii, k) = Kokkos::fma(2.0 * ksi, s_radial_basis_vals(iii, k - 1),
                                                   -s_radial_basis_vals(iii, k - 2));
@@ -498,7 +494,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
         int pair_offset = itype * species_count + jtype;
         int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
 
-        // Accumulate radial components using fused multiply–add
         for (int ri = 0; ri < radial_basis_size; ri++) {
           val = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_vals(iii, ri), val);
           der = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_ders(iii, ri), der);

@@ -196,14 +196,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::prepare_waves()
       last_max_edge = i;
     }
   }
-
   wave_sizes[2] = alpha_index_times_count - last_max_edge;
-  offsets[0] = 0;
-  offsets[1] = wave_sizes[0];
-  offsets[2] = wave_sizes[0] + wave_sizes[1];
-
-  for (int i = 0; i < 3; i++) { std::printf("Wave %d size: %d\n", i, wave_sizes[i]); }
-  for (int i = 0; i < 3; i++) { std::printf("Offset %d val: %d\n", i, offsets[i]); }
 }
 
 // Finds the maximum number of neighbours in all neigbhourhoods. This enables use to set the size (2nd index) of the jacobian. (Copied from other potentials)
@@ -325,12 +318,14 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     {
 
       typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPsInitMomentValsDers>
-          policy_moment_init({0, 0}, {chunk_size, alpha_moment_count});
+          policy_moment_init({0, 0}, {alpha_moment_count, chunk_size});
       Kokkos::parallel_for("InitMomentValDers", policy_moment_init, *this);
     }
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
+      // 64 threads per team/atom may waste a lot of shared memory
+      // Might be better to always use 32 threads per team/atom
       int team_size = team_size_default;
       if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
@@ -348,10 +343,9 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     }
 
     // ========== Calculate the non-elementary alphas  ==========
-    // This can be parallelized with dependence analysis (Cuda Graphs). Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
     {
       int team_size = team_size_default;
-      team_size = 128;
+      // Best team size depends on the max number of blocks per SM. 64 is good for CC8, and CC > 9+.
       Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeAlphaTimes> policy_basic_alpha(chunk_size,
                                                                                       team_size);
       Kokkos::parallel_for("ComputeAlphaTimes", policy_basic_alpha, *this);
@@ -360,14 +354,14 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     // ========== Set the scalar nbh ders wrt moments ==========
     {
       typename Kokkos::MDRangePolicy<Kokkos::Rank<2>, DeviceType, TagPairMTPsSetScalarNbhDers>
-          policy_nbh_init({0, 0}, {chunk_size, alpha_scalar_count});
+          policy_nbh_init({0, 0}, {alpha_scalar_count, chunk_size});
       Kokkos::parallel_for("SetScalarNbhDers", policy_nbh_init, *this);
     }
 
     // ========== Calc the nbh ders wrt moments ==========
     {
       int team_size = team_size_default;
-      team_size = 128;
+      // Best team size depends on the max number of blocks per SM. 64 is good for CC8, and CC > 9+.
       Kokkos::TeamPolicy<DeviceType, TagPairMTPsComputeNbhDers> policy_basic_alpha(chunk_size,
                                                                                    team_size);
       Kokkos::parallel_for("ComputeNbhDers", policy_basic_alpha, *this);
@@ -436,8 +430,8 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
 // Inits the working arrays: moment and ders, jacobian not needed.
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPsInitMomentValsDers,
-                                                                   const int &ii,
-                                                                   const int &k) const
+                                                                   const int &k,
+                                                                   const int &ii) const
 {
   d_moment_tensor_vals(ii, k) = 0;
   d_nbh_energy_ders_wrt_moments(ii, k) = 0;
@@ -460,20 +454,17 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
   const int itype = type[i] - 1;    // switch to zero indexing
   const int jnum = d_numneigh(i);
 
-  // If precomputing everything is too much memory, we can consider calculating dist powers and coord powers on-the-fly with pow.
   shared_double_2d s_radial_basis_vals(team.team_scratch(0), team.team_size(), radial_basis_size);
   shared_double_2d s_radial_basis_ders(team.team_scratch(0), team.team_size(), radial_basis_size);
   shared_double_2d s_dist_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
   shared_double_3d s_coord_powers(team.team_scratch(0), team.team_size(), max_alpha_index_basic);
 
   // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
-  // However, in the case that there are more threads than alpha basics (MTP lvl 12 or more), we can offset the starting indices, and guarentee no contention without even needing atomics. Doing this also might help with memory coalescing?
-
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
     const int j = d_neighbors(i, jj) & NEIGHMASK;
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
-    const F_FLOAT rsq = r[0] * r[0] + r[1] * r[1] + r[2] * r[2];
+    const F_FLOAT rsq = Kokkos::fma(r[0], r[0], Kokkos::fma(r[1], r[1], r[2] * r[2]));
 
     const bool valid_pair = rsq < max_cutoff_sq;
     d_within_cutoff(jj, ii) = valid_pair;
@@ -491,23 +482,24 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
     }
     // Calculate the radial basis and store in shared memory
     F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
-    F_FLOAT ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
+    F_FLOAT ksi = Kokkos::fma(2.0, dist, -(min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
-    s_radial_basis_vals(jj, 0) = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));
-    s_radial_basis_vals(jj, 1) = scaling * (ksi * (dist - max_cutoff) * (dist - max_cutoff));
+    F_FLOAT temp = dist - max_cutoff;
+    s_radial_basis_vals(jj, 0) = Kokkos::fma(scaling, temp * temp, 0.0);
+    s_radial_basis_vals(jj, 1) = Kokkos::fma(scaling, ksi * temp * temp, 0.0);
     for (int k = 2; k < radial_basis_size; k++) {
       s_radial_basis_vals(jj, k) =
-          2 * ksi * s_radial_basis_vals(jj, k - 1) - s_radial_basis_vals(jj, k - 2);
+          Kokkos::fma(2.0 * ksi, s_radial_basis_vals(jj, k - 1), -s_radial_basis_vals(jj, k - 2));
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(jj, 0) = scaling * 2 * (dist - max_cutoff);
-    s_radial_basis_ders(jj, 1) = scaling *
-        (mult * (dist - max_cutoff) * (dist - max_cutoff) + 2 * ksi * (dist - max_cutoff));
+    s_radial_basis_ders(jj, 0) = Kokkos::fma(scaling, 2.0 * temp, 0.0);
+    s_radial_basis_ders(jj, 1) =
+        Kokkos::fma(scaling, Kokkos::fma(mult, temp * temp, 2.0 * ksi * temp), 0.0);
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_ders(jj, k) =
-          2 * (mult * s_radial_basis_vals(jj, k - 1) + ksi * s_radial_basis_ders(jj, k - 1)) -
-          s_radial_basis_ders(jj, k - 2);
+      F_FLOAT tmp =
+          Kokkos::fma(mult, s_radial_basis_vals(jj, k - 1), ksi * s_radial_basis_ders(jj, k - 1));
+      s_radial_basis_ders(jj, k) = Kokkos::fma(2.0, tmp, -s_radial_basis_ders(jj, k - 2));
     }
 
     //Now, we loop through all the basic alphas
@@ -526,15 +518,15 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
 
       // Find the radial component and its derivative
       for (int ri = 0; ri < radial_basis_size; ri++) {
-        val += d_radial_basis_coeffs(offset + ri) * s_radial_basis_vals(jj, ri);
-        der += d_radial_basis_coeffs(offset + ri) * s_radial_basis_ders(jj, ri);
+        val = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_vals(jj, ri), val);
+        der = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_ders(jj, ri), der);
       }
 
       // Normalize by the rank of alpha's coresponding tensor
       int norm_rank = a0 + a1 + a2;
       F_FLOAT norm_fac = 1.0 / s_dist_powers(jj, norm_rank);
       val *= norm_fac;
-      der = der * norm_fac - norm_rank * val / dist;
+      der = Kokkos::fma(norm_fac, der, -norm_rank * val / dist);
 
       F_FLOAT pow0 = s_coord_powers(jj, a0, 0);
       F_FLOAT pow1 = s_coord_powers(jj, a1, 1);
@@ -550,9 +542,15 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
       temp_jac[1] = pow * r[1];
       temp_jac[2] = pow * r[2];
 
-      if (a0 != 0) temp_jac[0] += val * a0 * s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2;
-      if (a1 != 0) temp_jac[1] += val * a1 * pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2;
-      if (a2 != 0) temp_jac[2] += val * a2 * pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2);
+      if (a0 != 0)
+        temp_jac[0] =
+            Kokkos::fma(val * a0, s_coord_powers(jj, a0 - 1, 0) * pow1 * pow2, temp_jac[0]);
+      if (a1 != 0)
+        temp_jac[1] =
+            Kokkos::fma(val * a1, pow0 * s_coord_powers(jj, a1 - 1, 1) * pow2, temp_jac[1]);
+      if (a2 != 0)
+        temp_jac[2] =
+            Kokkos::fma(val * a2, pow0 * pow1 * s_coord_powers(jj, a2 - 1, 2), temp_jac[2]);
 
       d_moment_jacobian(jj, ii, k, 0) = temp_jac[0];
       d_moment_jacobian(jj, ii, k, 1) = temp_jac[1];
@@ -560,7 +558,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
     }
   });
 }
-
 // Calculates the non-elementary alpha from the basic alphas
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
@@ -595,8 +592,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
 // Sets the nbh energy ders as the linear coeffs
 template <class DeviceType>
 KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(TagPairMTPsSetScalarNbhDers,
-                                                                   const int &ii,
-                                                                   const int &k) const
+                                                                   const int &k,
+                                                                   const int &ii) const
 {
   d_nbh_energy_ders_wrt_moments(ii, d_alpha_moment_mapping(k)) = d_linear_coeffs(k);
 }
@@ -665,6 +662,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
       }
     }
 
+    // This could feasibly be done with a reduction instead, but is a marginal speedup if any
     a_f(i, 0) += temp_force[0];
     a_f(i, 1) += temp_force[1];
     a_f(i, 2) += temp_force[2];

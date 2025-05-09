@@ -75,7 +75,7 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
 
   //Kernels for initing working views
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPsInitMomentValsDers, const int &ii, const int &k) const;
+  void operator()(TagPairMTPsInitMomentValsDers, const int &k, const int &ii) const;
 
   // Kernels for computation
   KOKKOS_INLINE_FUNCTION
@@ -91,7 +91,7 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
           &team) const;
 
   KOKKOS_INLINE_FUNCTION
-  void operator()(TagPairMTPsSetScalarNbhDers, const int &ii, const int &k) const;
+  void operator()(TagPairMTPsSetScalarNbhDers, const int &k, const int &ii) const;
 
   KOKKOS_INLINE_FUNCTION
   void
@@ -112,7 +112,6 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
 
   // The size of the waves for alpha times. The MTP has a maximum of 3 waves.
   int wave_sizes[3] = {0};
-  int offsets[3] = {0};
 
   // Characteric flags
   int inum, max_neighs;
