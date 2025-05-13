@@ -513,7 +513,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
         // Rough heuristic for team size
         int team_size = 256;
         int sizes[3] = {128, 64, 32};
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 3; i++) {
           if (coeff_count >= sizes[i]) break;
           team_size = sizes[i];
         }
