@@ -509,8 +509,14 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
 
       } else {                          // Neighbourhood mode
         F_FLOAT chunk_max_grade = 0;    // Reduce into a tmp variable
-        int team_size = team_size_default;
-        if (!host_flag && coeff_count < 32) team_size = 32;
+
+        // Rough heuristic for team size
+        int team_size = 256;
+        int sizes[3] = {128, 64, 32};
+        for (int i = 0; i < 5; i++) {
+          if (coeff_count >= sizes[i]) break;
+          team_size = sizes[i];
+        }
 
         int scratch_size = scratch_size_helper<F_FLOAT>(coeff_count);
         Kokkos::TeamPolicy<DeviceType> policy_calc_grades(chunk_size, team_size);
