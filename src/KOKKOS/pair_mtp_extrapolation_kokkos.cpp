@@ -427,7 +427,6 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     }
 
     // ========== Calculate the non-elementary alphas ==========
-    // This can be parallelized with dependence analysis (Cuda Graphs). Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
     {
       typename Kokkos::RangePolicy<DeviceType, TagPairMTPComputeAlphaTimes> policy_times(
           0, chunk_size);
@@ -854,7 +853,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
         }
 
         // Normalize by the rank of alpha's corresponding tensor
-
         val *= norm_fac;
         der = Kokkos::fma(norm_fac, der, -norm_rank * val / dist);
 
