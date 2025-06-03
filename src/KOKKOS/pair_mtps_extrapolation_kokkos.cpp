@@ -119,20 +119,25 @@ void PairMTPsExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
 {
   // We may need to process in chunks to deal with memory limitations
   // For now we expect the user to specify the chunk size
+  if (narg != 3 && narg != 6)
+    error->all(
+        FLERR,
+        "Pair mtp/extrapolation/kk/s requires 3 : {potential_file} \"chunk_size\" {chunksize} "
+        "Or 6 arguments: {potential_file} {output_file} {selection_threshold} "
+        "{break_threshold} \"chunksize\" {chunksize}.");
 
-  if (narg != 8)
-    error->all(FLERR,
-               "Pair mtp/extrapolation/kk/s requires 8 arguments: {potential_file} "
-               "{extrapolation_mode} {selection_threshold} {break_threshold} "
-               "{sampling_frequency} {output_file} \"chunk_size\" {chunksize}");
-
-  if (LAMMPS_NS::utils::lowercase(arg[6]) != "chunksize")
-    error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}");
-
-  input_chunk_size = utils::inumeric(FLERR, arg[7], true, lmp);
-
-  // This also calls read_file which parses and loads the necessary arrays in host
-  PairMTPExtrapolation::settings(6, arg);
+  if (narg == 3) {
+    if (LAMMPS_NS::utils::lowercase(arg[2]) != "chunksize")
+      error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}.");
+    input_chunk_size = utils::inumeric(FLERR, arg[3], true, lmp);
+    PairMTPExtrapolation::settings(1, arg);
+  }
+  if (narg == 6) {
+    if (LAMMPS_NS::utils::lowercase(arg[4]) != "chunksize")
+      error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}.");
+    input_chunk_size = utils::inumeric(FLERR, arg[5], true, lmp);
+    PairMTPExtrapolation::settings(4, arg);
+  }
 
   // Prepare check the alpha times waves
   PairMTPsExtrapolationKokkos::prepare_waves();
@@ -247,14 +252,12 @@ template <class DeviceType> void PairMTPsExtrapolationKokkos<DeviceType>::prepar
 
 template <class DeviceType> void PairMTPsExtrapolationKokkos<DeviceType>::evaluate_grades()
 {
-  if (atom->natoms == 0)
-    max_grade = 0;
-  else if (pool_grades)
-    max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
+  // Transfer the latest atom data and  grades to the host if needed
+  if (extrapolation_flag || max_grade >= select_threshold) {
 
-  if (max_grade >= select_threshold && save_configs) {
-    // Sync atom positions, id, and types to the host
-    atomKK->sync(Host, X_MASK | TYPE_MASK);
+    // Sync atom positions, id, and types to the host for MLIP-3 style writing
+    // If a lammps dump is used, sync is not needed.
+    if (mlip3_style) atomKK->sync(Host, X_MASK | TYPE_MASK);
 
     if (!pool_grades) {                          // If nbh mode, copy nbh grades to host
       if (!pool_grades && nbh_count < inum) {    // Allocate more memory if needed
@@ -266,9 +269,11 @@ template <class DeviceType> void PairMTPsExtrapolationKokkos<DeviceType>::evalua
       Kokkos::deep_copy(h_nbh_extrapolation_grades, d_nbh_extrapolation_grades);
     }
 
-    write_config();
+    if (mlip3_style) write_config();
   }
-  if (max_grade >= break_threshold && comm->me == 0) {
+
+  // Now process the max grade against the break threshold
+  if (mlip3_style && max_grade >= break_threshold && comm->me == 0) {
     std::fflush(preselected_file);    // Ensure the writing buffers are flushed before breaking.
     std::fclose(preselected_file);
     error->one(FLERR, "Exceeded Break Threshold: {:.5f}. Terminating simulation.\n", max_grade);
@@ -308,12 +313,10 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
     return;
   }
 
-  // Determine if we are doing extrapolation grade this timestep.
-  steps_since_last_sample++;
-  bool calculate_grade_this_step = !(steps_since_last_sample < sampling_frequency);
-  if (calculate_grade_this_step) steps_since_last_sample = 0;
-
   max_grade = 0;
+
+  // Determine if we are doing extrapolation grade this timestep.
+  bool calculate_grade_this_step = (extrapolation_flag || mlip3_style);
 
   eflag = eflag_in;
   vflag = vflag_in;
@@ -614,7 +617,12 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
           "sComputeCfgGrade", policy_calc_grades,
           sComputeCfgGrade<DeviceType>(coeff_count, d_energy_ders_wrt_coeffs, d_inverse_active_set),
           Kokkos::Max<F_FLOAT>(max_grade));
-    } else {    // Multiple Processes
+
+      if (atom->natoms == 0)
+        max_grade = 0;
+      else if (pool_grades)
+        max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
+    } else {                          // Multiple Processes
 
       // On multiple procs we need to move ders to host and MPI reduce across ranks
       Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
@@ -622,8 +630,6 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
       Kokkos::deep_copy(h_energy_ders_wrt_coeffs, d_energy_ders_wrt_coeffs);
 
       PairMTPExtrapolation::compile_grades();
-      // We perform the grade calc after MPI on CPU due to transfer overhead.
-      max_grade = PairMTPExtrapolation::calculate_extrapolation_grade();
     }    // Normalize by atom count in CFG mode
   } else {    // Neighbourhood mode
     if (comm->nprocs > 1) PairMTPExtrapolation::compile_grades();

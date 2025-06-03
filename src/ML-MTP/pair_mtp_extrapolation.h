@@ -30,10 +30,16 @@ namespace LAMMPS_NS {
 
 class PairMTPExtrapolation : public PairMTP {
  public:
-  PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp) {};
+  PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp)
+  {
+    nextra = 1;              // Number of extra coefficients (1 for extrapolation)
+    pvector = &max_grade;    // Pointer directly to the max extrapolation grade
+  };
   ~PairMTPExtrapolation() override;
-  void compute(int, int) override;         //Workhorse comuptation
-  void settings(int, char **) override;    // Reads args from "pair_style"
+  void compute(int, int) override;                        //Workhorse comuptation
+  void settings(int, char **) override;                   // Reads args from "pair_style"
+  void *extract(const char *, int &) override;            // Provides access to compute grade flag
+  void *extract_peratom(const char *, int &) override;    // Provides access to per-atom data
 
  protected:
   void read_file(FILE *);                    //Parsing file using LAMMPS utils
@@ -44,13 +50,13 @@ class PairMTPExtrapolation : public PairMTP {
 
   int coeff_count;    // Sum of radial, species and linear coeff count
 
-  bool save_configs;              // Whether we write configs above the select threshold
-  bool pool_grades;               // Is configuration mode?
-  int sampling_frequency;         // Sample frequency, default of 1
-  int steps_since_last_sample;    // Steps since last sample
-  double select_threshold;        // Grade threshold for selection
-  double break_threshold;         // Grade threshold for termination
-  double max_grade;               // Grade of current iteration
+  int extrapolation_flag;      // Whether to use extrapolation this iteration (MUST BE INT)
+  bool mlip3_style = false;    // Whether to write configs with MLIP-3 compatability
+
+  bool pool_grades;           // Is configuration mode?
+  double select_threshold;    // Grade threshold for selection
+  double break_threshold;     // Grade threshold for termination
+  double max_grade;           // Grade of current iteration
 
   // Active set
   double **active_set;            // Current active set

@@ -60,15 +60,13 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
 
 void PairMTPExtrapolation::compute(int eflag, int vflag)
 {
-  // Simply call the base class compute if we aren't sampling this time step
-  steps_since_last_sample++;
-  if (steps_since_last_sample < sampling_frequency) {
+  max_grade = 0;
+
+  // If we are not extrapolating per fix pair and not extrapolating continously, we can just call the base class compute
+  if (!extrapolation_flag && !mlip3_style) {
     PairMTP::compute(eflag, vflag);
     return;
   }
-  steps_since_last_sample = 0;
-
-  max_grade = 0;
 
   ev_setup(eflag, vflag);
 
@@ -322,7 +320,8 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
     }
   }
   compile_grades();
-  evaluate_grades();
+
+  if (mlip3_style) evaluate_grades();
 }
 
 /* ----------------------------------------------------------------------
@@ -355,7 +354,14 @@ void PairMTPExtrapolation::compile_grades()
     else
       MPI_Reduce(&energy_ders_wrt_coeffs[0], nullptr, coeff_count, MPI_DOUBLE, MPI_SUM, 0, world);
     if (comm->me == 0) max_grade = calculate_extrapolation_grade();
+
+    if (atom->natoms == 0)
+      max_grade = 0;
+    else if (pool_grades)
+      max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
+
     MPI_Bcast(&max_grade, 1, MPI_DOUBLE, 0, world);
+
   } else {    // Neighbourhood mode
     MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
   }
@@ -366,12 +372,7 @@ void PairMTPExtrapolation::compile_grades()
 ------------------------------------------------------------------------- */
 void PairMTPExtrapolation::evaluate_grades()
 {
-  if (atom->natoms == 0)
-    max_grade = 0;
-  else if (pool_grades)
-    max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
-
-  if (max_grade >= select_threshold && save_configs) write_config();
+  if (max_grade >= select_threshold) write_config();
   if (max_grade >= break_threshold && comm->me == 0) {
     std::fflush(preselected_file);    // Ensure the writing buffers are flushed before breaking.
     std::fclose(preselected_file);
@@ -470,49 +471,31 @@ void PairMTPExtrapolation::write_config()
 
 void PairMTPExtrapolation::settings(int narg, char **arg)
 {
-  if (comm->me == 0) {
-    if (narg < 6)
-      error->one(FLERR,
-                 "Pair mtp/extrapolation only accepts 6 arguments: {potential_file} "
-                 "{extrapolation_mode} {selection_threshold} {break_threshold} "
-                 "{sampling_frequency} {output_file}. Currently "
-                 "specified: {} arguments!",
-                 narg);
-    if (narg > 6)
-      utils::logmesg(lmp,
-                     "Pair mtp/extrapolation only accepts 6 arguments. Ignoring "
-                     "excessive arguments!\n");
+
+  if (narg != 1 && narg != 4)
+    error->all(
+        FLERR,
+        "Pair mtp/extrapolation only accepts 1 argument: {potential_file}. "
+        "Or 4 arguments: {potential_file} {output_file}. {selection_threshold} {break_threshold}.");
+
+  if (narg == 4) {
+    mlip3_style = true;
+    select_threshold = utils::numeric(FLERR, arg[2], true, lmp);
+    break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
   }
 
-  std::string mode_name = LAMMPS_NS::utils::lowercase(arg[1]);
-  if (mode_name == "neighborhood" || mode_name == "neighbourhood")    //support for british spelling
-    pool_grades = false;
-  else if (mode_name == "configuration")
-    pool_grades = true;
-  else
-    error->all(FLERR,
-               "Only \"configuration\" and \"neighborhood\" extrapolation modes are supported. "
-               "Currently specified: \"{}\"",
-               arg[1]);
-
-  select_threshold = utils::numeric(FLERR, arg[2], true, lmp);
-  break_threshold = utils::numeric(FLERR, arg[3], true, lmp);
-  sampling_frequency = utils::inumeric(FLERR, arg[4], true, lmp);
-  steps_since_last_sample = sampling_frequency;    // Force the first sample to be taken
-  save_configs = LAMMPS_NS::utils::lowercase(arg[5]) != "none";
+  FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
+  PairMTPExtrapolation::read_file(mtp_file);
+  fclose(mtp_file);
 
   if (comm->me == 0)
     utils::logmesg(lmp,
-                   "Sampling Scheme: {} mode, sampling every {} timestep(s) with a selection "
-                   "threshold of {} "
+                   "Sampling Scheme: {} mode, with a selection threshold of {} "
                    "and break threshold of {}.\n",
-                   mode_name, sampling_frequency, select_threshold, break_threshold);
+                   (pool_grades ? "Configuration" : "Neighbourhood"), select_threshold,
+                   break_threshold);
 
-  FILE *mtp_file = utils::open_potential(arg[0], lmp, nullptr);
-  read_file(mtp_file);
-  fclose(mtp_file);
-
-  if (save_configs && comm->me == 0) preselected_file = std::fopen(arg[5], "w");
+  if (mlip3_style && comm->me == 0) preselected_file = std::fopen(arg[1], "w");
   write_buffer_ptr = new fmt::memory_buffer();
 }
 
@@ -561,10 +544,13 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
 
     tfr.ignore_comments = true;    // Accept comments after reading the version which is a comment
 
+    int energy_weight, site_en_weight;
+
     line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
     keyword = line_tokens.next_string();
     if (keyword != "energy_weight")
       lmp->error->one(FLERR, "Error in reading MTP file, energy_weight");
+    energy_weight = line_tokens.next_double();
 
     line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
     keyword = line_tokens.next_string();
@@ -580,11 +566,20 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
     keyword = line_tokens.next_string();
     if (keyword != "site_en_weight")
       lmp->error->one(FLERR, "Error in reading MTP file, site_en_weight");
+    site_en_weight = line_tokens.next_double();
 
     line_tokens = ValueTokenizer(std::string(tfr.next_line()), separators);
     keyword = line_tokens.next_string();
     if (keyword != "weight_scaling")
       lmp->error->one(FLERR, "Error in reading MTP file, weight_scaling");
+
+    if (energy_weight + site_en_weight > 1)
+      lmp->error->one(FLERR,
+                      "Error, the MTP currently only supports configuration mode (energy_weight=1) "
+                      "or neighbourhood mode (site_en_weight=1). "
+                      "Please retrain the MTP with the correct modes!");
+
+    pool_grades = (energy_weight == 1);
 
     fgetc(mtp_file);    // We need to skip foward 1 character. There is a # before the binary data.
     utils::sfread(FLERR, &active_set[0][0], sizeof(double), num_doubles, mtp_file, nullptr,
@@ -597,4 +592,37 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
   MPI_Bcast(&active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
   MPI_Bcast(&inverse_active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
   allocated = 1;
+}
+
+/* ----------------------------------------------------------------------
+  Flag to indicate if we are computing extrapolation grades on this iteration
+ ---------------------------------------------------------------------- */
+void *PairMTPExtrapolation::extract(const char *str, int &dim)
+{
+  dim = 0;
+  //check if str=="gamma_flag" then compute extrapolation grades on this iteration
+  if (strcmp(str, "extrapolation_flag") == 0) return (void *) &extrapolation_flag;
+
+  return nullptr;
+}
+
+/* ----------------------------------------------------------------------
+   peratom requests from FixPair
+   return ptr to requested data
+   also return ncol = # of quantites per atom
+     0 = per-atom vector
+     1 or more = # of columns in per-atom array
+   return NULL if str is not recognized
+---------------------------------------------------------------------- */
+void *PairMTPExtrapolation::extract_peratom(const char *str, int &ncol)
+{
+  if (strcmp(str, "extrapolation") == 0) {
+    if (pool_grades)
+      error->all(FLERR, "Per-atom extrapolation grades are not available in configuration mode!");
+
+    ncol = 0;
+    return (void *) nbh_extrapolation_grades;
+  }
+
+  return nullptr;
 }
