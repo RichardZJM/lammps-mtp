@@ -60,7 +60,7 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
 
 void PairMTPExtrapolation::compute(int eflag, int vflag)
 {
-  max_grade = 0;
+  max_grade = -1;
 
   // If we are not extrapolating per fix pair and not extrapolating continously, we can just call the base class compute
   if (!extrapolation_flag && !mlip3_style) {
@@ -321,7 +321,8 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
   }
   compile_grades();
 
-  if (mlip3_style) evaluate_grades();
+  if (comm->me == 0) exposed_grade = max_grade;    // Expose the grade to the compute on rank 0 only
+  if (mlip3_style) evaluate_grades();              // Evaluate grades per MLIP-3 two-threshold style
 }
 
 /* ----------------------------------------------------------------------
@@ -492,7 +493,7 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
     utils::logmesg(lmp,
                    "Sampling Scheme: {} mode, with a selection threshold of {} "
                    "and break threshold of {}.\n",
-                   (pool_grades ? "Configuration" : "Neighbourhood"), select_threshold,
+                   (pool_grades ? "Configuration" : "Neighborhood"), select_threshold,
                    break_threshold);
 
   if (mlip3_style && comm->me == 0) preselected_file = std::fopen(arg[1], "w");
@@ -617,8 +618,9 @@ void *PairMTPExtrapolation::extract(const char *str, int &dim)
 void *PairMTPExtrapolation::extract_peratom(const char *str, int &ncol)
 {
   if (strcmp(str, "extrapolation") == 0) {
+    // TODO: I'll need to fix this later!!!
     if (pool_grades)
-      error->all(FLERR, "Per-atom extrapolation grades are not available in configuration mode!");
+      error->all(FLERR, "Please use the MLIP-3 style extrapolation for configuration mode MTPs!");
 
     ncol = 0;
     return (void *) nbh_extrapolation_grades;

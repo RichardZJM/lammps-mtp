@@ -32,8 +32,8 @@ class PairMTPExtrapolation : public PairMTP {
  public:
   PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp)
   {
-    nextra = 1;              // Number of extra coefficients (1 for extrapolation)
-    pvector = &max_grade;    // Pointer directly to the max extrapolation grade
+    nextra = 1;                  // Number of extra coefficients (1 for extrapolation)
+    pvector = &exposed_grade;    // Pointer directly to the max extrapolation grade
   };
   ~PairMTPExtrapolation() override;
   void compute(int, int) override;                        //Workhorse comuptation
@@ -57,6 +57,10 @@ class PairMTPExtrapolation : public PairMTP {
   double select_threshold;    // Grade threshold for selection
   double break_threshold;     // Grade threshold for termination
   double max_grade;           // Grade of current iteration
+
+  // Grade which we expose to the compute
+  // This is needed since the compute assumes extensive properties
+  double exposed_grade = 0;
 
   // Active set
   double **active_set;            // Current active set
