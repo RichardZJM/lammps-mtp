@@ -30,11 +30,7 @@ namespace LAMMPS_NS {
 
 class PairMTPExtrapolation : public PairMTP {
  public:
-  PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp)
-  {
-    nextra = 1;                  // Number of extra coefficients (1 for extrapolation)
-    pvector = &exposed_grade;    // Pointer directly to the max extrapolation grade
-  };
+  PairMTPExtrapolation(class LAMMPS *);
   ~PairMTPExtrapolation() override;
   void compute(int, int) override;                        //Workhorse comuptation
   void settings(int, char **) override;                   // Reads args from "pair_style"
@@ -53,14 +49,10 @@ class PairMTPExtrapolation : public PairMTP {
   int extrapolation_flag;      // Whether to use extrapolation this iteration (MUST BE INT)
   bool mlip3_style = false;    // Whether to write configs with MLIP-3 compatability
 
-  bool pool_grades;           // Is configuration mode?
+  int configuration_mode;     // Is configuration mode?
   double select_threshold;    // Grade threshold for selection
   double break_threshold;     // Grade threshold for termination
   double max_grade;           // Grade of current iteration
-
-  // Grade which we expose to the compute
-  // This is needed since the compute assumes extensive properties
-  double exposed_grade = 0;
 
   // Active set
   double **active_set;            // Current active set

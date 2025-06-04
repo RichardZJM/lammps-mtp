@@ -127,9 +127,9 @@ void PairMTPsExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
         "{break_threshold} \"chunksize\" {chunksize}.");
 
   if (narg == 3) {
-    if (LAMMPS_NS::utils::lowercase(arg[2]) != "chunksize")
+    if (LAMMPS_NS::utils::lowercase(arg[1]) != "chunksize")
       error->all(FLERR, "Chunksize not found, please specify \"chunksize\" {chunksize}.");
-    input_chunk_size = utils::inumeric(FLERR, arg[3], true, lmp);
+    input_chunk_size = utils::inumeric(FLERR, arg[2], true, lmp);
     PairMTPExtrapolation::settings(1, arg);
   }
   if (narg == 6) {
@@ -205,7 +205,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
 
   //Setup the inverse active set if nbh mode or
   // Or if we are calcing the cfg grade on device, (ie. not mpi splitted)
-  if (!pool_grades || comm->nprocs == 1) {
+  if (!configuration_mode || comm->nprocs == 1) {
     MemKK::realloc_kokkos(d_inverse_active_set, "mtp/extrapolation/kk/s:inverse_active_set",
                           coeff_count, coeff_count);
     auto h_inverse_active_set = Kokkos::create_mirror_view(d_inverse_active_set);
@@ -213,13 +213,13 @@ void PairMTPsExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
       for (int j = 0; j < coeff_count; j++) h_inverse_active_set(i, j) = inverse_active_set[i][j];
     Kokkos::deep_copy(d_inverse_active_set, h_inverse_active_set);
 
-    if (!pool_grades) {    // In neighbourhood mode only, we need memory to store grades
+    if (!configuration_mode) {    // In neighbourhood mode only, we need memory to store grades
       MemKK::realloc_kokkos(d_nbh_extrapolation_grades, "mtp/extrapolation/kk/s:inverse_active_set",
                             1);    //We will resize as needed in compute.
     }
   }
 
-  if (pool_grades) {
+  if (configuration_mode) {
     MemKK::realloc_kokkos(d_energy_ders_wrt_coeffs, "mtp/extrapolation/kk/s:energy_der_wrt_coeffs",
                           coeff_count);
     MemKK::realloc_kokkos(d_tmp_energy_ders_wrt_coeffs,
@@ -259,8 +259,8 @@ template <class DeviceType> void PairMTPsExtrapolationKokkos<DeviceType>::evalua
     // If a lammps dump is used, sync is not needed.
     if (mlip3_style) atomKK->sync(Host, X_MASK | TYPE_MASK);
 
-    if (!pool_grades) {                          // If nbh mode, copy nbh grades to host
-      if (!pool_grades && nbh_count < inum) {    // Allocate more memory if needed
+    if (!configuration_mode) {                          // If nbh mode, copy nbh grades to host
+      if (!configuration_mode && nbh_count < inum) {    // Allocate more memory if needed
         memory->grow(nbh_extrapolation_grades, inum, "nbh_extrapolation_grades");
         nbh_count = inum;
       }
@@ -317,6 +317,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
 
   // Determine if we are doing extrapolation grade this timestep.
   bool calculate_grade_this_step = (extrapolation_flag || mlip3_style);
+  if (calculate_grade_this_step) max_grade = 0;
 
   eflag = eflag_in;
   vflag = vflag_in;
@@ -398,10 +399,10 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
   }
 
   // Resize nbh grades to inum not chunk size. The reduces host communication need. Only 1 FP64 per nbh.
-  if (!pool_grades && (int) d_nbh_extrapolation_grades.extent(0) < inum)
+  if (!configuration_mode && (int) d_nbh_extrapolation_grades.extent(0) < inum)
     Kokkos::realloc(Kokkos::WithoutInitializing, d_nbh_extrapolation_grades, inum);
 
-  if (calculate_grade_this_step && pool_grades) {    // Init the coeff ders if cfg mode
+  if (calculate_grade_this_step && configuration_mode) {    // Init the coeff ders if cfg mode
     typename Kokkos::RangePolicy<DeviceType, TagPairMTPInitCoeffDers> policy_coeff_init(
         0, coeff_count);
     Kokkos::parallel_for("InitCoeffDers", policy_coeff_init, *this);
@@ -492,7 +493,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
 
     // ========== Reduce Basis Ders (Configuration mode) / Calculate Extrapolation (Neighbourhood Mode) ==========
     if (calculate_grade_this_step) {
-      if (pool_grades) {    // Configuration mode,
+      if (configuration_mode) {    // Configuration mode,
         //Here is quick heurustuc tuned to work okay for most problem sizes and coeff counts.
         int team_size = 1024;
         int sizes[5] = {512, 256, 128, 64, 32};
@@ -598,7 +599,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
 
   // Now, we need to handle the extrapolation obtained collectivelly across chunks.
   // This will also depend on if we are split across MPI processes.
-  if (pool_grades) {            // Configuration mode
+  if (configuration_mode) {     // Configuration mode
     if (comm->nprocs == 1) {    // Single Process
       // If we are sure we are running on 1 process, we can directly evaluate the cfg grade on device
       // Perform the reduction across the current chunk_size. Simple heuristic for team size.
@@ -618,11 +619,13 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
           sComputeCfgGrade<DeviceType>(coeff_count, d_energy_ders_wrt_coeffs, d_inverse_active_set),
           Kokkos::Max<F_FLOAT>(max_grade));
 
-      if (atom->natoms == 0)
-        max_grade = 0;
-      else if (pool_grades)
-        max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
-    } else {                          // Multiple Processes
+      if (atom->natoms > 0)
+        max_grade /= atom->natoms;    // Normalize
+      else
+        max_grade = 0.0;
+      pvector[0] = max_grade;
+
+    } else {    // Multiple Processes
 
       // On multiple procs we need to move ders to host and MPI reduce across ranks
       Kokkos::View<double *, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>
@@ -632,7 +635,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
       PairMTPExtrapolation::compile_grades();
     }    // Normalize by atom count in CFG mode
   } else {    // Neighbourhood mode
-    if (comm->nprocs > 1) PairMTPExtrapolation::compile_grades();
+    PairMTPExtrapolation::compile_grades();
   }
 
   evaluate_grades();    // Evaluate and write based on max grade

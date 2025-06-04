@@ -37,6 +37,13 @@
 
 using namespace LAMMPS_NS;
 
+PairMTPExtrapolation::PairMTPExtrapolation(LAMMPS *lmp) : PairMTP(lmp)
+{
+  nextra = 1;                      // Number of extra coefficients (1 for extrapolation)
+  pvector = new double[nextra];    // Pointer directly to the max extrapolation grade
+  pvector[0] = 0.0;
+};
+
 /* ---------------------------------------------------------------------- */
 
 PairMTPExtrapolation::~PairMTPExtrapolation()
@@ -48,8 +55,8 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
     memory->destroy(inverse_active_set);
     memory->destroy(radial_jacobian);
     memory->destroy(energy_ders_wrt_coeffs);
-    if (!pool_grades) memory->destroy(nbh_extrapolation_grades);
-    delete write_buffer_ptr;
+    if (!configuration_mode) memory->destroy(nbh_extrapolation_grades);
+    if (mlip3_style) delete write_buffer_ptr;
     write_buffer_ptr = nullptr;
   }
 }
@@ -60,13 +67,13 @@ PairMTPExtrapolation::~PairMTPExtrapolation()
 
 void PairMTPExtrapolation::compute(int eflag, int vflag)
 {
-  max_grade = -1;
-
   // If we are not extrapolating per fix pair and not extrapolating continously, we can just call the base class compute
   if (!extrapolation_flag && !mlip3_style) {
     PairMTP::compute(eflag, vflag);
     return;
   }
+
+  max_grade = 0;
 
   ev_setup(eflag, vflag);
 
@@ -84,13 +91,13 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       list->firstneigh;    //List  (head of array) of neighbours for a given central atom
 
   // Resize the nbh extrapolation grades if needed. No need to initialize, first access is write
-  if (!pool_grades && nbh_count < inum) {
+  if (!configuration_mode && nbh_count < inum) {
     memory->grow(nbh_extrapolation_grades, inum, "nbh_extrapolation_grades");
     nbh_count = inum;
   }
 
   // If are in configuration, we need to reset the working array once per compute call / config
-  if (pool_grades)
+  if (configuration_mode)
     std::fill(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0] + coeff_count, 0.0);
 
   // Loop over all provided neighbourhoods
@@ -122,7 +129,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
                   (alpha_index_basic_count * species_count * radial_coeff_count_per_pair),
               0.0);
 
-    if (!pool_grades)
+    if (!configuration_mode)
       std::fill(&energy_ders_wrt_coeffs[0], &energy_ders_wrt_coeffs[0] + coeff_count, 0.0);
 
     // ------------ Begin Alpha Basic Calc ------------
@@ -313,16 +320,16 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       }
 
     // Directly calculate extraplation grade for neighbourhood mode
-    if (!pool_grades) {
+    if (!configuration_mode) {
       double grade = calculate_extrapolation_grade();
       max_grade = std::max(grade, max_grade);
       nbh_extrapolation_grades[i] = grade;
     }
   }
+
   compile_grades();
 
-  if (comm->me == 0) exposed_grade = max_grade;    // Expose the grade to the compute on rank 0 only
-  if (mlip3_style) evaluate_grades();              // Evaluate grades per MLIP-3 two-threshold style
+  if (mlip3_style) evaluate_grades();    // Evaluate grades per MLIP-3 two-threshold style
 }
 
 /* ----------------------------------------------------------------------
@@ -348,24 +355,22 @@ double PairMTPExtrapolation::calculate_extrapolation_grade()
 void PairMTPExtrapolation::compile_grades()
 {
   // MPI reduce operations based on selection mode
-  if (pool_grades) {    // Configuration mode
-    if (comm->me == 0)
-      MPI_Reduce(MPI_IN_PLACE, &energy_ders_wrt_coeffs[0], coeff_count, MPI_DOUBLE, MPI_SUM, 0,
-                 world);
+  if (configuration_mode) {    // Configuration mode
+
+    // Sum contributions across all processes
+    MPI_Allreduce(MPI_IN_PLACE, energy_ders_wrt_coeffs, coeff_count, MPI_DOUBLE, MPI_SUM, world);
+
+    max_grade = calculate_extrapolation_grade();
+
+    if (atom->natoms > 0)
+      max_grade /= atom->natoms;    // Normalize
     else
-      MPI_Reduce(&energy_ders_wrt_coeffs[0], nullptr, coeff_count, MPI_DOUBLE, MPI_SUM, 0, world);
-    if (comm->me == 0) max_grade = calculate_extrapolation_grade();
-
-    if (atom->natoms == 0)
-      max_grade = 0;
-    else if (pool_grades)
-      max_grade /= atom->natoms;    // CFG mode: Normalize by atom count
-
-    MPI_Bcast(&max_grade, 1, MPI_DOUBLE, 0, world);
+      max_grade = 0.0;
 
   } else {    // Neighbourhood mode
     MPI_Allreduce(MPI_IN_PLACE, &max_grade, 1, MPI_DOUBLE, MPI_MAX, world);
   }
+  if (comm->me == 0) pvector[0] = max_grade;    // Expose the max grade
 }
 
 /* ----------------------------------------------------------------------
@@ -409,7 +414,7 @@ void PairMTPExtrapolation::write_config()
     const double xi[3] = {x[i][0], x[i][1], x[i][2]};
     const int global_i = i + index_offset + 1;
 
-    if (!pool_grades) {
+    if (!configuration_mode) {
       const double grade = nbh_extrapolation_grades[i];
       fmt::format_to(std::back_inserter(*write_buffer_ptr),
                      "{}\t{}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.5f}\n", global_i, itype, xi[0], xi[1],
@@ -437,7 +442,7 @@ void PairMTPExtrapolation::write_config()
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xprd, 0.0, 0.0);
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xy, domain->yprd, 0.0);
     std::fprintf(preselected_file, "%.6f %.6f %.6f\n", domain->xz, domain->yz, domain->zprd);
-    if (!pool_grades)
+    if (!configuration_mode)
       std::fprintf(
           preselected_file,
           "AtomData:  id type       cartes_x      cartes_y      cartes_z       nbh_grades\n");
@@ -473,11 +478,15 @@ void PairMTPExtrapolation::write_config()
 void PairMTPExtrapolation::settings(int narg, char **arg)
 {
 
-  if (narg != 1 && narg != 4)
-    error->all(
-        FLERR,
-        "Pair mtp/extrapolation only accepts 1 argument: {potential_file}. "
-        "Or 4 arguments: {potential_file} {output_file}. {selection_threshold} {break_threshold}.");
+  if ((narg == 3 && LAMMPS_NS::utils::lowercase(arg[1]) == "chunksize") ||
+      (narg == 6 && LAMMPS_NS::utils::lowercase(arg[4]) == "chunksize")) {
+    if (comm->me == 0) utils::logmesg(lmp, "Ignoring chunksize settings!\n");
+    narg -= 2;    // Ignore the chunksize settings
+  } else if (narg != 1 && narg != 4)
+    error->all(FLERR,
+               "Pair mtp/extrapolation only accepts 1 argument: {potential_file}. "
+               "Or 4 arguments: {potential_file} {output_file}. {selection_threshold} "
+               "{break_threshold}.");
 
   if (narg == 4) {
     mlip3_style = true;
@@ -490,14 +499,20 @@ void PairMTPExtrapolation::settings(int narg, char **arg)
   fclose(mtp_file);
 
   if (comm->me == 0)
-    utils::logmesg(lmp,
-                   "Sampling Scheme: {} mode, with a selection threshold of {} "
-                   "and break threshold of {}.\n",
-                   (pool_grades ? "Configuration" : "Neighborhood"), select_threshold,
-                   break_threshold);
+    if (mlip3_style)
+      utils::logmesg(lmp,
+                     "Extrapolation Scheme: {} mode, with a selection threshold of {} "
+                     "and break threshold of {}.\n",
+                     (configuration_mode ? "Configuration" : "Neighborhood"), select_threshold,
+                     break_threshold);
+    else
+      utils::logmesg(lmp, "Extrapolation Mode: {} mode.\n",
+                     (configuration_mode ? "Configuration" : "Neighborhood"));
 
-  if (mlip3_style && comm->me == 0) preselected_file = std::fopen(arg[1], "w");
-  write_buffer_ptr = new fmt::memory_buffer();
+  if (mlip3_style) {
+    if (comm->me == 0) preselected_file = std::fopen(arg[1], "w");
+    write_buffer_ptr = new fmt::memory_buffer();
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -580,7 +595,7 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
                       "or neighbourhood mode (site_en_weight=1). "
                       "Please retrain the MTP with the correct modes!");
 
-    pool_grades = (energy_weight == 1);
+    configuration_mode = (energy_weight == 1);
 
     fgetc(mtp_file);    // We need to skip foward 1 character. There is a # before the binary data.
     utils::sfread(FLERR, &active_set[0][0], sizeof(double), num_doubles, mtp_file, nullptr,
@@ -590,6 +605,7 @@ void PairMTPExtrapolation::read_file(FILE *mtp_file)
   }
 
   //Broadcast active set to others
+  MPI_Bcast(&configuration_mode, 1, MPI_INT, 0, world);
   MPI_Bcast(&active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
   MPI_Bcast(&inverse_active_set[0][0], num_doubles, MPI_DOUBLE, 0, world);
   allocated = 1;
@@ -618,9 +634,8 @@ void *PairMTPExtrapolation::extract(const char *str, int &dim)
 void *PairMTPExtrapolation::extract_peratom(const char *str, int &ncol)
 {
   if (strcmp(str, "extrapolation") == 0) {
-    // TODO: I'll need to fix this later!!!
-    if (pool_grades)
-      error->all(FLERR, "Please use the MLIP-3 style extrapolation for configuration mode MTPs!");
+    if (configuration_mode)
+      error->one(FLERR, "Please use the MLIP-3 style extrapolation for configuration mode MTPs!");
 
     ncol = 0;
     return (void *) nbh_extrapolation_grades;
