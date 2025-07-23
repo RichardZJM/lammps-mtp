@@ -73,6 +73,8 @@ class PairMTP : public Pair {
   int jac_size = 0;         // Size of the jacobian (jnum dim)
   double *dist_powers;      // Buffer used for powers of dist (eg. d^i)
   double **coord_powers;    // Buffer used for powers of rel. pos. (eg. [dx^i, dy^i, dz^i])
+  double *radial_vals;      // Buffer used for radial basis function values for each mu
+  double *radial_ders;      // Buffer used for radial basis function derivatives for each mu
   double ***moment_jacobian = nullptr;    // First created during compute using grow
   double *moment_tensor_vals;             //Buffer to hold the moments
   double *nbh_energy_ders_wrt_moments;    // Same as above except for ders

@@ -28,7 +28,7 @@ using namespace LAMMPS_NS;
 
 void RBChebyshev::calc_radial_basis(double dist)
 {
-  double mult = 2.0 / (max_cutoff - min_cutoff);
+  // double mult = 2.0 / (max_cutoff - min_cutoff);
   double ksi = (2 * dist - (min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
   radial_basis_vals[0] = scaling * (1 * (dist - max_cutoff) * (dist - max_cutoff));

@@ -138,21 +138,29 @@ void PairMTP::compute(int eflag, int vflag)
         for (int a = 0; a < 3; a++) coord_powers[k][a] = coord_powers[k - 1][a] * r[a];
       }
 
+      // Compute the radial basis values
+      for (int mu = 0; mu < radial_func_count; mu++) {
+        double val = 0;
+        double der = 0;
+        int pair_offset = itype * species_count + jtype;
+        int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
+
+        for (int ri = 0; ri < radial_basis_size; ri++) {
+          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
+          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
+        }
+        radial_vals[mu] = val;
+        radial_ders[mu] = der;
+      }
+
       //Calculate the alpha basics
       for (int k = 0; k < alpha_index_basic_count; k++) {
         double val = 0;
         double der = 0;
         int mu = alpha_index_basic[k][0];
 
-        //Find the offset for the radial basis coeffs
-        int pair_offset = itype * species_count + jtype;
-        int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
-
-        // Find the radial component and its derivative
-        for (int ri = 0; ri < radial_basis_size; ri++) {
-          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
-          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
-        }
+        val = radial_vals[mu];
+        der = radial_ders[mu];
 
         // Normalize by the rank of alpha's coresponding tensor
         int norm_rank = alpha_index_basic[k][1] + alpha_index_basic[k][2] + alpha_index_basic[k][3];
@@ -509,10 +517,6 @@ Might be able to replace that section with next_values which is in both TFR and 
                    alpha_index_basic[i][1] + alpha_index_basic[i][2] + alpha_index_basic[i][3]);
     max_alpha_index_basic++;    // Add 1 to account for zeroth order indicies
 
-    //Allocate the working buffers to the appropriate size.
-    memory->create(dist_powers, max_alpha_index_basic, "distance_power_buffer");
-    memory->create(coord_powers, max_alpha_index_basic, 3, "coordinate_powers_buffer");
-
     // Get the alpha times count
     line_tokens = ValueTokenizer(tfr.next_line(), separators);
     keyword = line_tokens.next_string();
@@ -591,6 +595,12 @@ Might be able to replace that section with next_values which is in both TFR and 
   radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
   int np1 = (species_count + 1);
 
+  //Working buffers
+  memory->create(dist_powers, max_alpha_index_basic, "dist_powers");
+  memory->create(coord_powers, max_alpha_index_basic, 3, "coord_powers");
+  memory->create(radial_vals, radial_func_count, "radial_vals");
+  memory->create(radial_ders, radial_func_count, "radial_ders");
+
   // Now we allocate memory for all the arrays.
   if (comm->me != 0) {
     //First we reconstruct the radial basis set
@@ -609,8 +619,6 @@ Might be able to replace that section with next_values which is in both TFR and 
     memory->create(alpha_moment_mapping, alpha_scalar_count, "alpha_moment_mapping");
 
     //Working buffers
-    memory->create(dist_powers, max_alpha_index_basic, "dist_powers");
-    memory->create(coord_powers, max_alpha_index_basic, 3, "coord_powers");
     memory->create(moment_tensor_vals, alpha_moment_count, "moment_tensor_vals");
     memory->create(nbh_energy_ders_wrt_moments, alpha_moment_count, "nbh_energy_ders_wrt_moments");
     //Jacobian and within_cutoff will be first created with memory->grow during calculation.
