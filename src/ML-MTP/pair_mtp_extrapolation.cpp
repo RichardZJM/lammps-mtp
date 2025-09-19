@@ -160,11 +160,30 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         for (int a = 0; a < 3; a++) coord_powers[k][a] = coord_powers[k - 1][a] * r[a];
       }
 
+      // Compute the radial basis values
+      for (int mu = 0; mu < radial_func_count; mu++) {
+        double val = 0;
+        double der = 0;
+        int pair_offset = itype * species_count + jtype;
+        int mu_offset = mu * radial_basis_size;
+        int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
+
+        for (int ri = 0; ri < radial_basis_size; ri++) {
+          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
+          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
+        }
+        radial_vals[mu] = val;
+        radial_ders[mu] = der;
+      }
+
       //Calculate the alpha basics
       for (int k = 0; k < alpha_index_basic_count; k++) {
         double val = 0;
         double der = 0;
         int mu = alpha_index_basic[k][0];
+
+        val = radial_vals[mu];
+        der = radial_ders[mu];
 
         // Normalize by the rank of alpha's coresponding tensor
         int norm_rank = alpha_index_basic[k][1] + alpha_index_basic[k][2] + alpha_index_basic[k][3];
@@ -175,15 +194,9 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         double pow2 = coord_powers[alpha_index_basic[k][3]][2];
         double pow = pow0 * pow1 * pow2;
 
-        //Find the offset for the radial basis coeffs
-        int pair_offset = itype * species_count + jtype;
+        // Calculate the radial jacobian
         int mu_offset = mu * radial_basis_size;
-        int offset = (pair_offset * radial_basis_size * radial_func_count) + mu_offset;
-
-        // Find the radial component and its derivative
         for (int ri = 0; ri < radial_basis_size; ri++) {
-          val += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_vals[ri];
-          der += radial_basis_coeffs[offset + ri] * radial_basis->radial_basis_ders[ri];
           radial_jacobian[k][jtype][mu_offset + ri] +=
               radial_basis->radial_basis_vals[ri] * norm_fac * pow;
         }
