@@ -9,8 +9,10 @@ SHELL = /bin/sh
 KOKKOS_ABSOLUTE_PATH = $(shell cd $(KOKKOS_PATH); pwd)
 export MPICH_CXX = $(KOKKOS_ABSOLUTE_PATH)/bin/nvcc_wrapper
 export OMPI_CXX = $(KOKKOS_ABSOLUTE_PATH)/bin/nvcc_wrapper
+export NVCC_WRAPPER_DEFAULT_COMPILER=/usr/bin/g++-14
+
 CC =		mpicxx
-CCFLAGS =	-g -O3 -DNDEBUG -Xcudafe --diag_suppress=unrecognized_pragma,--diag_suppress=128
+CCFLAGS =	-g -O3 -DNDEBUG -Xcudafe --diag_suppress=unrecognized_pragma,--diag_suppress=128 -D__STRICT_ANSI__
 SHFLAGS =	-fPIC
 # uncomment when compiling with Intel 21.5 or older
 FMTFLAGS = 	# -std=c++11
