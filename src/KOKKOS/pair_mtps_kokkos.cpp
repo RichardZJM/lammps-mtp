@@ -330,9 +330,9 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
       int vector_length = vector_length_default;
       check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size * max_neighs, team_size,
                                                        vector_length);
-
-      int radial_scratch_count = radial_basis_size * 2;    // Vals and derivative
+      int radial_scratch_count = 2 * (radial_func_count + radial_basis_size);
       int dist_coords_scratch_count = 4 * max_alpha_index_basic;
+
       // Reduce the scratch size to the max number of neighbors
       int scratch_size = scratch_size_helper<F_FLOAT>(
           min(team_size, max_neighs) * (radial_scratch_count + dist_coords_scratch_count));
@@ -446,6 +446,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
 {
   // Extract the atom number
   int ii = team.league_rank();
+  int thread = team.team_rank();
 
   // Get information about the central atom
   const int i = d_ilist[ii + chunk_offset];
@@ -454,10 +455,12 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
   const int jnum = d_numneigh(i);
   const int array_size = Kokkos::min(team.team_size(), jnum);
 
-  shared_double_2d s_radial_basis_vals(team.team_scratch(0), array_size, radial_basis_size);
-  shared_double_2d s_radial_basis_ders(team.team_scratch(0), array_size, radial_basis_size);
+  shared_double_2d s_radial_vals(team.team_scratch(0), array_size, radial_func_count);
+  shared_double_2d s_radial_ders(team.team_scratch(0), array_size, radial_func_count);
   shared_double_2d s_dist_powers(team.team_scratch(0), array_size, max_alpha_index_basic);
   shared_double_3d s_coord_powers(team.team_scratch(0), array_size, max_alpha_index_basic);
+  shared_double_2d s_radial_basis_vals(team.team_scratch(0), array_size, radial_basis_size);
+  shared_double_2d s_radial_basis_ders(team.team_scratch(0), array_size, radial_basis_size);
 
   // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
@@ -472,71 +475,73 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
     if (!valid_pair) return;
     const F_FLOAT dist = sqrt(rsq);
 
-    s_dist_powers(team.team_rank(), 0) = s_coord_powers(team.team_rank(), 0, 0) =
-        s_coord_powers(team.team_rank(), 0, 1) = s_coord_powers(team.team_rank(), 0, 2) =
-            1;    // Set the constants
+    s_dist_powers(thread, 0) = s_coord_powers(thread, 0, 0) = s_coord_powers(thread, 0, 1) =
+        s_coord_powers(thread, 0, 2) = 1;    // Set the constants
 
     // Precompute the coord and distance power
     for (int k = 1; k < max_alpha_index_basic; k++) {
-      s_dist_powers(team.team_rank(), k) = s_dist_powers(team.team_rank(), k - 1) * dist;
+      s_dist_powers(thread, k) = s_dist_powers(thread, k - 1) * dist;
       for (int a = 0; a < 3; a++)
-        s_coord_powers(team.team_rank(), k, a) = s_coord_powers(team.team_rank(), k - 1, a) * r[a];
+        s_coord_powers(thread, k, a) = s_coord_powers(thread, k - 1, a) * r[a];
     }
+
     // Calculate the radial basis and store in shared memory
     F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
     F_FLOAT ksi = Kokkos::fma(2.0, dist, -(min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
 
     F_FLOAT temp = dist - max_cutoff;
-    s_radial_basis_vals(team.team_rank(), 0) = Kokkos::fma(scaling, temp * temp, 0.0);
-    s_radial_basis_vals(team.team_rank(), 1) = Kokkos::fma(scaling, ksi * temp * temp, 0.0);
+    s_radial_basis_vals(thread, 0) = scaling * temp * temp;
+    s_radial_basis_vals(thread, 1) = scaling * ksi * temp * temp;
     for (int k = 2; k < radial_basis_size; k++) {
-      s_radial_basis_vals(team.team_rank(), k) =
-          Kokkos::fma(2.0 * ksi, s_radial_basis_vals(team.team_rank(), k - 1),
-                      -s_radial_basis_vals(team.team_rank(), k - 2));
+      s_radial_basis_vals(thread, k) = Kokkos::fma(2.0 * ksi, s_radial_basis_vals(thread, k - 1),
+                                                   -s_radial_basis_vals(thread, k - 2));
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(team.team_rank(), 0) = Kokkos::fma(scaling, 2.0 * temp, 0.0);
-    s_radial_basis_ders(team.team_rank(), 1) =
-        Kokkos::fma(scaling, Kokkos::fma(mult, temp * temp, 2.0 * ksi * temp), 0.0);
+    s_radial_basis_ders(thread, 0) = scaling * 2.0 * temp;
+    s_radial_basis_ders(thread, 1) = scaling * Kokkos::fma(mult, temp * temp, 2.0 * ksi * temp);
     for (int k = 2; k < radial_basis_size; k++) {
-      F_FLOAT tmp = Kokkos::fma(mult, s_radial_basis_vals(team.team_rank(), k - 1),
-                                ksi * s_radial_basis_ders(team.team_rank(), k - 1));
-      s_radial_basis_ders(team.team_rank(), k) =
-          Kokkos::fma(2.0, tmp, -s_radial_basis_ders(team.team_rank(), k - 2));
+      F_FLOAT tmp = Kokkos::fma(mult, s_radial_basis_vals(thread, k - 1),
+                                ksi * s_radial_basis_ders(thread, k - 1));
+      s_radial_basis_ders(thread, k) = Kokkos::fma(2.0, tmp, -s_radial_basis_ders(thread, k - 2));
+    }
+
+    // Precompute the mu vals and ders
+    int pair_offset = itype * species_count + jtype;
+    for (int mu = 0; mu < radial_func_count; mu++) {
+      F_FLOAT val = 0;
+      F_FLOAT der = 0;
+      int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
+
+      for (int ri = 0; ri < radial_basis_size; ri++) {
+        val = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_vals(thread, ri), val);
+        der = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_ders(thread, ri), der);
+      }
+
+      s_radial_vals(thread, mu) = val;
+      s_radial_ders(thread, mu) = der;
     }
 
     //Now, we loop through all the basic alphas
     for (int k = 0; k < alpha_index_basic_count; k++) {
 
-      F_FLOAT val = 0;
-      F_FLOAT der = 0;
       int mu = d_alpha_index_basic(k, 0);
       int a0 = d_alpha_index_basic(k, 1);
       int a1 = d_alpha_index_basic(k, 2);
       int a2 = d_alpha_index_basic(k, 3);
 
-      //Find the offset for the radial basis coeffs
-      int pair_offset = itype * species_count + jtype;
-      int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
-
-      // Find the radial component and its derivative
-      for (int ri = 0; ri < radial_basis_size; ri++) {
-        val = Kokkos::fma(d_radial_basis_coeffs(offset + ri),
-                          s_radial_basis_vals(team.team_rank(), ri), val);
-        der = Kokkos::fma(d_radial_basis_coeffs(offset + ri),
-                          s_radial_basis_ders(team.team_rank(), ri), der);
-      }
+      F_FLOAT val = s_radial_vals(thread, mu);
+      F_FLOAT der = s_radial_ders(thread, mu);
 
       // Normalize by the rank of alpha's coresponding tensor
       int norm_rank = a0 + a1 + a2;
-      F_FLOAT norm_fac = 1.0 / s_dist_powers(team.team_rank(), norm_rank);
+      F_FLOAT norm_fac = 1.0 / s_dist_powers(thread, norm_rank);
       val *= norm_fac;
       der = Kokkos::fma(norm_fac, der, -norm_rank * val / dist);
 
-      F_FLOAT pow0 = s_coord_powers(team.team_rank(), a0, 0);
-      F_FLOAT pow1 = s_coord_powers(team.team_rank(), a1, 1);
-      F_FLOAT pow2 = s_coord_powers(team.team_rank(), a2, 2);
+      F_FLOAT pow0 = s_coord_powers(thread, a0, 0);
+      F_FLOAT pow1 = s_coord_powers(thread, a1, 1);
+      F_FLOAT pow2 = s_coord_powers(thread, a2, 2);
       F_FLOAT pow = pow0 * pow1 * pow2;
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
 
@@ -549,14 +554,14 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
       temp_jac[2] = pow * r[2];
 
       if (a0 != 0)
-        temp_jac[0] = Kokkos::fma(
-            val * a0, s_coord_powers(team.team_rank(), a0 - 1, 0) * pow1 * pow2, temp_jac[0]);
+        temp_jac[0] =
+            Kokkos::fma(val * a0, s_coord_powers(thread, a0 - 1, 0) * pow1 * pow2, temp_jac[0]);
       if (a1 != 0)
-        temp_jac[1] = Kokkos::fma(
-            val * a1, pow0 * s_coord_powers(team.team_rank(), a1 - 1, 1) * pow2, temp_jac[1]);
+        temp_jac[1] =
+            Kokkos::fma(val * a1, pow0 * s_coord_powers(thread, a1 - 1, 1) * pow2, temp_jac[1]);
       if (a2 != 0)
-        temp_jac[2] = Kokkos::fma(
-            val * a2, pow0 * pow1 * s_coord_powers(team.team_rank(), a2 - 1, 2), temp_jac[2]);
+        temp_jac[2] =
+            Kokkos::fma(val * a2, pow0 * pow1 * s_coord_powers(thread, a2 - 1, 2), temp_jac[2]);
 
       d_moment_jacobian(jj, ii, k, 0) = temp_jac[0];
       d_moment_jacobian(jj, ii, k, 1) = temp_jac[1];

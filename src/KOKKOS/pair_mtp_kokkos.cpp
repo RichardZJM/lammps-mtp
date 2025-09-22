@@ -304,9 +304,9 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       int team_count = (chunk_size - 1) / team_size + 1;
       check_team_size_for<TagPairMTPComputeAlphaBasic>(team_count, team_size, vector_length);
       int radial_scratch_count = 2 * (radial_func_count + radial_basis_size);
-      int coords_scratch_count = 4 * max_alpha_index_basic;
-      int scratch_size =
-          scratch_size_helper<F_FLOAT>(team_size * (radial_scratch_count + coords_scratch_count));
+      int dist_coords_scratch_count = 4 * max_alpha_index_basic;
+      int scratch_size = scratch_size_helper<F_FLOAT>(
+          team_size * (radial_scratch_count + dist_coords_scratch_count));
       Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(team_count,
                                                                                      team_size);
       policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
@@ -453,8 +453,8 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       F_FLOAT mult = 2.0 / (max_cutoff - min_cutoff);
       F_FLOAT ksi = Kokkos::fma(2.0, dist, -(min_cutoff + max_cutoff)) / (max_cutoff - min_cutoff);
       const F_FLOAT temp = dist - max_cutoff;
-      s_radial_basis_vals(thread, 0) = Kokkos::fma(scaling, temp * temp, 0.0);
-      s_radial_basis_vals(thread, 1) = Kokkos::fma(scaling, ksi * temp * temp, 0.0);
+      s_radial_basis_vals(thread, 0) = scaling * temp * temp;
+      s_radial_basis_vals(thread, 1) = scaling * ksi * temp * temp;
 
       for (int k = 2; k < radial_basis_size; k++) {
         s_radial_basis_vals(thread, k) = Kokkos::fma(2.0 * ksi, s_radial_basis_vals(thread, k - 1),
