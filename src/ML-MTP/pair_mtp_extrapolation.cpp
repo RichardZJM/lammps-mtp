@@ -165,7 +165,6 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
         double val = 0;
         double der = 0;
         int pair_offset = itype * species_count + jtype;
-        int mu_offset = mu * radial_basis_size;
         int offset = (pair_offset * radial_coeff_count_per_pair) + mu * radial_basis_size;
 
         for (int ri = 0; ri < radial_basis_size; ri++) {
