@@ -17,9 +17,9 @@
 
 #ifdef PAIR_CLASS
 // clang-format off
-PairStyle(mtp/kk/s,PairMTPsKokkos<LMPDeviceType>);
-PairStyle(mtp/kk/s/device,PairMTPsKokkos<LMPDeviceType>);
-PairStyle(mtp/kk/s/host,PairMTPsKokkos<LMPHostType>);
+PairStyle(mtp/small/kk,PairMTPsKokkos<LMPDeviceType>);
+PairStyle(mtp/small/kk/device,PairMTPsKokkos<LMPDeviceType>);
+PairStyle(mtp/small/kk/host,PairMTPsKokkos<LMPHostType>);
 // clang-format on
 #else
 
