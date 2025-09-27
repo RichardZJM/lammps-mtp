@@ -81,9 +81,6 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
   double **f = atom->f;      // atomic forces
   int *type = atom->type;    //atomic types
 
-  // int nlocal = atom->nlocal; // Don't really need this
-  // int newton_pair = force->newton_pair; // Newton pair is forced on
-
   int inum = list->inum;             // The number of central atoms (neigbhourhoods)
   int *ilist = list->ilist;          // List of central atom ids
   int *numneigh = list->numneigh;    // List of the number of neighbours for each central atom
@@ -349,7 +346,6 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
 ------------------------------------------------------------------------- */
 double PairMTPExtrapolation::calculate_extrapolation_grade()
 {
-  // This should  use BLAS if possible
   double max_grade = 0;
   for (int i = 0; i < coeff_count; i++) {
     double current_grade = 0;
@@ -411,8 +407,7 @@ void PairMTPExtrapolation::write_config()
 ------------------------------------------------------------------------- */
   write_buffer_ptr->clear();    // Clear the buffer from the last print
 
-  int inum = list->inum;    // The number of central atoms (neigbhourhoods)
-  // int *ilist = list->ilist;    // List of atom ids
+  int inum = list->inum;     // The number of central atoms (neigbhourhoods)
   int *type = atom->type;    //atomic types
   double **x = atom->x;      // atomic positons
   int index_offset = 0;      // offset to get global indicies
@@ -421,7 +416,7 @@ void PairMTPExtrapolation::write_config()
   index_offset -= inum;
 
   for (int ii = 0; ii < inum; ii++) {
-    const int i = ii;    //= ilist[i];    // Best that this is the ilist but this doesn't work.
+    const int i = ii;
     const int itype = type[i] - 1;
     const double xi[3] = {x[i][0], x[i][1], x[i][2]};
     const int global_i = i + index_offset + 1;

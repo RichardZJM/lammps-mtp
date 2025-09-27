@@ -59,8 +59,7 @@ class PairMTPExtrapolation : public PairMTP {
   double **inverse_active_set;    // Inverse of the current active set
 
   //Working buffers
-  double ***radial_jacobian;    // Jacobian of radial component wrt to basic moment
-  //   double *radial_basic_ders;            // Energy ders wrt to basic moments
+  double ***radial_jacobian;         // Jacobian of radial component wrt to basic moment
   double *radial_moment_ders;        //Ders of non-elemnetary moments wrt to basis moments
   double *energy_ders_wrt_coeffs;    // Candidate information vector
 

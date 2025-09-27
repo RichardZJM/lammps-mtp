@@ -577,7 +577,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
     const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaTimes>::member_type &team)
     const
 {
-
   int ii = team.league_rank();
 
   int offset = 0;

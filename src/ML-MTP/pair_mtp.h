@@ -81,9 +81,6 @@ class PairMTP : public Pair {
 
   // Cache whether to calculate forces based on cutoff as calculated in alpha basics
   bool *within_cutoff = nullptr;    // First created during compute using grow
-
-  // We do not need to cache relative positions since they aren't needed after alpha basic
-  // unless we need to calculate stresss.
 };
 
 }    // namespace LAMMPS_NS

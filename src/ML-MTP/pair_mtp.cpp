@@ -78,9 +78,6 @@ void PairMTP::compute(int eflag, int vflag)
   double **f = atom->f;      // atomic forces
   int *type = atom->type;    //atomic types
 
-  // int nlocal = atom->nlocal; // Don't really need this
-  // int newton_pair = force->newton_pair; // Newton pair is forced on
-
   int inum = list->inum;             // The number of central atoms (neigbhourhoods)
   int *ilist = list->ilist;          // List of central atom ids
   int *numneigh = list->numneigh;    // List of the number of neighbours for each central atom
@@ -130,7 +127,7 @@ void PairMTP::compute(int eflag, int vflag)
       within_cutoff[jj] = true;
 
       const double dist = std::sqrt(rsq);
-      radial_basis->calc_radial_basis_ders(dist);    // Calculate radial basis
+      radial_basis->calc_radial_basis_ders(dist);
 
       // Precompute the coord and distance power
       for (int k = 1; k < max_alpha_index_basic; k++) {
@@ -203,8 +200,8 @@ void PairMTP::compute(int eflag, int vflag)
       moment_tensor_vals[alpha_index_times[k][3]] += val2 * val0 * val1;
     }
 
-    // ------------ Convolve Basis Set From Alpha Map ------------
-    if (eflag_atom || eflag_global) {        // This could be replaced with eflag_either
+    // ------------ Compute Basis Set From Alpha Map ------------
+    if (eflag_atom || eflag_global) {
       nbh_energy = species_coeffs[itype];    // Essentially the reference point energy per species
       for (int k = 0; k < alpha_scalar_count; k++)
         nbh_energy += linear_coeffs[k] * moment_tensor_vals[alpha_moment_mapping[k]];
@@ -492,7 +489,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     tfr.set_bufsize(
         (alpha_index_basic_count * 20 + 20) *
         sizeof(
-            char));    // Adjust the buffer size. This needed to ensure cross-compatability since the MLIP files stores all the alpha indicies on the same line for some reason.
+            char));    // Adjust the buffer size. This needed to ensure cross-compatability since the MLIP files stores all the alpha indicies on the same line.
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
 
     keyword = line_tokens.next_string();
@@ -528,7 +525,7 @@ Might be able to replace that section with next_values which is in both TFR and 
     tfr.set_bufsize(
         (alpha_index_times_count * 32 + 20) *
         sizeof(
-            char));    // Adjust the buffer size. This needed to ensure cross-compatability since the MLIP files stores all the alpha indicies on the same line for some reason.
+            char));    // Adjust the buffer size. This needed to ensure cross-compatability since the MLIP files stores all the alpha indicies on the same line.
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
     keyword = line_tokens.next_string();
     if (keyword != "alpha_index_times")
@@ -554,7 +551,6 @@ Might be able to replace that section with next_values which is in both TFR and 
     for (int i = 0; i < alpha_scalar_count; i++) {
       alpha_moment_mapping[i] = line_tokens.next_int();
     }
-    // alpha_scalar_count++;    // The 0th rank tensor scalar is accounted for by the species coefficients
 
     //Read the species coefficients
     line_tokens = ValueTokenizer(tfr.next_line(), separators + "{},");
@@ -589,7 +585,7 @@ Might be able to replace that section with next_values which is in both TFR and 
   MPI_Bcast(&alpha_index_times_count, 1, MPI_INT, 0, world);
   MPI_Bcast(&alpha_scalar_count, 1, MPI_INT, 0, world);
 
-  // Precalc some constatns
+  // Precalc some constants
   int pairs_count = species_count * species_count;
   radial_coeff_count_per_pair = radial_basis_size * radial_func_count;
   radial_coeff_count = pairs_count * radial_coeff_count_per_pair;
@@ -602,7 +598,7 @@ Might be able to replace that section with next_values which is in both TFR and 
   memory->create(radial_ders, radial_func_count, "radial_ders");
 
   // Now we allocate memory for all the arrays.
-  if (comm->me != 0) {
+  if (comm->me != 0) {    // Non-zero proc
     //First we reconstruct the radial basis set
     if (radial_basis_type_index == 1) {
       radial_basis = new RBChebyshev(radial_basis_size, lmp);
@@ -647,10 +643,10 @@ Might be able to replace that section with next_values which is in both TFR and 
   MPI_Bcast(alpha_moment_mapping, alpha_scalar_count, MPI_INT, 0, world);
 
   // //Working buffers
-  // //Preassign constant values for dist powers and coord powers. Other buffers can be unitialized.
+  // //Preassign constant values for dist powers and coord powers. Other buffers can be uninited.
   dist_powers[0] = coord_powers[0][0] = coord_powers[0][1] = coord_powers[0][2] = 1;
 
-  // //Coefficients
+  // Coefficients
   MPI_Bcast(radial_basis_coeffs, radial_coeff_count, MPI_DOUBLE, 0, world);
   MPI_Bcast(linear_coeffs, alpha_scalar_count, MPI_DOUBLE, 0, world);
   MPI_Bcast(species_coeffs, species_count, MPI_DOUBLE, 0, world);
