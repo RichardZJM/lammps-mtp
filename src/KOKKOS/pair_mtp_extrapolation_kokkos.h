@@ -45,8 +45,6 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   struct TagPairMTPSetScalarNbhDers {};
   struct TagPairMTPComputeNbhDers {};
   struct TagPairMTPReduceCoeffDers {};
-  //   struct TagPairMTPComputeNbhGrades {};
-  //   struct TagPairMTPComputeCfgGrade {};
   template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
@@ -130,18 +128,6 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
              const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPReduceCoeffDers>::member_type
                  &team) const;
 
-  //   KOKKOS_INLINE_FUNCTION
-  //   void operator()(
-  //       TagPairMTPComputeNbhGrades,
-  //       const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhGrades>::member_type &team,
-  //       double &nbh_max_grade) const;
-
-  //   KOKKOS_INLINE_FUNCTION
-  //   void operator()(
-  //       TagPairMTPComputeCfgGrade,
-  //       const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeCfgGrade>::member_type &team,
-  //       double &cfg_max_grade) const;
-
  protected:
   int input_chunk_size, chunk_size,
       chunk_offset;    // Needed to process the computation in batches to avoid running out of VRAM.
@@ -151,7 +137,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
 
   int eflag, vflag;    // Energy and virial flag
 
-  typename AT::t_neighbors_2d d_neighbors;    //
+  typename AT::t_neighbors_2d d_neighbors;
   typename AT::t_int_1d_randomread d_ilist;
   typename AT::t_int_1d_randomread d_numneigh;
 

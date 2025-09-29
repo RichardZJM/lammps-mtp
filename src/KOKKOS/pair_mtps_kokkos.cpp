@@ -119,7 +119,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::settings(int narg, 
   PairMTP ::settings(
       1, arg);    // This also calls read_file which parses and loads the necessary arrays in host
 
-  // Prepare check the alpha times waves
+  // Prepare and check the alpha times waves
   PairMTPsKokkos::prepare_waves();
 
   // ---------- Now we move arrays to device ----------
@@ -288,7 +288,6 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
   chunk_offset = 0;
 
   // Team sizes. We specify 32 for 1 warp per thread block.
-  // Maybe need 64 for AMD?
   int team_size_default = 1;
   int vector_length_default = 1;
   if (!host_flag) team_size_default = 64;
@@ -323,8 +322,6 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
 
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
-      // 64 threads per team/atom may waste a lot of shared memory
-      // Might be better to always use 32 threads per team/atom
       int team_size = team_size_default;
       if (!host_flag && max_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
@@ -367,7 +364,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
       Kokkos::parallel_for("ComputeNbhDers", policy_basic_alpha, *this);
     }
 
-    // ========== Compute force (and convolve alphas to get energy if needed) ==========
+    // ========== Compute force (and dot product with alphas to get energy if needed) ==========
     {
       int team_size = team_size_default;
       if (!host_flag && max_neighs < 32) team_size = 32;
@@ -462,7 +459,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
   shared_double_2d s_radial_basis_vals(team.team_scratch(0), array_size, radial_basis_size);
   shared_double_2d s_radial_basis_ders(team.team_scratch(0), array_size, radial_basis_size);
 
-  // Now we calculate the alpha basics. There might be benefits to using a parallel reduce into the array of moment values here.
+  // Now we calculate the alpha basics.
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
     const int j = d_neighbors(i, jj) & NEIGHMASK;
     const int jtype = type[j] - 1;    // switch to zero indexing
@@ -674,7 +671,6 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
       }
     }
 
-    // This could feasibly be done with a reduction instead, but is a marginal speedup if any
     a_f(i, 0) += temp_force[0];
     a_f(i, 1) += temp_force[1];
     a_f(i, 2) += temp_force[2];

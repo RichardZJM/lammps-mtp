@@ -133,7 +133,6 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::settings(int narg, c
   MemKK::realloc_kokkos(d_species_coeffs, "mtp/kk:species_coeffs", species_count);
   MemKK::realloc_kokkos(d_linear_coeffs, "mtp/kk:linear_coeffs", alpha_scalar_count);
 
-  //Setup the working arrays. It might be preferable for these to be scatter view
   // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum. We will resize these as needed in compute.
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk:moment_jacobian", 1, 1, alpha_index_basic_count,
                         3);
@@ -263,7 +262,6 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
   chunk_offset = 0;
 
   // Team sizes. We specify 32 for 1 warp per thread block.
-  // Maybe need 64 for AMD?
   int team_size_default = 1;
   int vector_length_default = 1;
   if (!host_flag) team_size_default = 32;
@@ -314,7 +312,6 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
     }
 
     // ========== Calculate the non-elementary alphas  ==========
-    // This can be parallelized with dependence analysis (Cuda Graphs). Worth exploring later although it shouldn't make a big difference except for atom count much lower than chunk_size.
     {
       typename Kokkos::RangePolicy<DeviceType, TagPairMTPComputeAlphaTimes> policy_times(
           0, chunk_size);
@@ -335,7 +332,7 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       Kokkos::parallel_for("ComputeNbhDers", policy_nbh_calc, *this);
     }
 
-    // ========== Compute force (and convolve alphas to get energy if needed) ==========
+    // ========== Compute force (and dot product with alphas to get energy if needed) ==========
     {
       if (evflag) {
         if (neighflag == HALF) {
@@ -651,7 +648,7 @@ PairMTPKokkos<DeviceType>::operator()(TagPairMTPComputeForce<NEIGHFLAG, EVFLAG>,
     F_FLOAT nbh_energy =
         d_species_coeffs[itype];    // Essentially the reference point energy per species
 
-    // Take the linear combination of the basis set and the learned coefficients. This might benefit from using a reduction?
+    // Take the linear combination of the basis set and the learned coefficients.
     for (int k = 0; k < alpha_scalar_count; k++) {
       int basis_member_index = d_alpha_moment_mapping(k);
       nbh_energy += d_linear_coeffs(k) * d_moment_tensor_vals(ii, basis_member_index);

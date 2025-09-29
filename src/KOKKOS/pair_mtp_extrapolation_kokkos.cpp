@@ -120,7 +120,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   if (narg != 3 && narg != 6)
     error->all(
         FLERR,
-        "Pair mtp/extrapolation/kk/s requires 3 : {potential_file} \"chunk_size\" {chunksize} "
+        "Pair mtp/extrapolation/kk/s requires 3 : {potential_file} \"chunksize\" {chunksize} "
         "Or 6 arguments: {potential_file} {output_file} {selection_threshold} "
         "{break_threshold} \"chunksize\" {chunksize}.");
 
@@ -153,7 +153,6 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   MemKK::realloc_kokkos(d_species_coeffs, "mtp/extrapolation/kk:species_coeffs", species_count);
   MemKK::realloc_kokkos(d_linear_coeffs, "mtp/extrapolation/kk:linear_coeffs", alpha_scalar_count);
 
-  //Setup the working arrays. It might be preferable for these to be scatter views
   // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum.
   //We will resize these as needed in compute.
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/extrapolation/kk:moment_jacobian", 1, 1,
@@ -197,7 +196,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   Kokkos::deep_copy(d_linear_coeffs, h_linear_coeffs);
   // No need to deep copy the working buffers.
 
-  //Setup the inverse active set if nbh mode or
+  //Setup the inverse active set if nbh mode
   // Or if we are calcing the cfg grade on device, (ie. not mpi splitted)
   if (!configuration_mode || comm->nprocs == 1) {
     MemKK::realloc_kokkos(d_inverse_active_set, "mtp/extrapolation/kk:inverse_active_set",
@@ -453,7 +452,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
     // ========== Reduce Basis Ders (Configuration mode) / Calculate Extrapolation (Neighbourhood Mode) ==========
     if (calculate_grade_this_step) {
       if (configuration_mode) {    // Configuration mode,
-        //Here is quick heurustuc tuned to work okay for most problem sizes and coeff counts.
+        //Here is quick heuristic tuned to work okay for most problem sizes and coeff counts.
         int team_size = 1024;
         int sizes[5] = {512, 256, 128, 64, 32};
         for (int i = 0; i < 5; i++) {
@@ -498,7 +497,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
       }
     }
 
-    // ========== Compute force (and convolve alphas to get energy if needed) ==========
+    // ========== Compute force (and dot product with alphas to get energy if needed) ==========
     {
       if (evflag) {
         if (neighflag == HALF) {
@@ -570,7 +569,7 @@ void PairMTPExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in)
   // This will also depend on if we are split across MPI processes.
   if (configuration_mode) {     // Configuration mode
     if (comm->nprocs == 1) {    // Single Process
-      // If we are sure we are running on 1 process, we can directly evaluate the cfg grade on device
+      // If we are running on 1 process, we can directly evaluate the cfg grade on device
       // Perform the reduction across the current chunk_size. Simple heuristic for team size.
       int team_size = 512;
       int sizes[5] = {256, 128, 64};
@@ -1048,9 +1047,9 @@ There are three types of ders:
 2. Species Ders
 3. Moment Ders
 Radials are much much more expesive than the others but there is no guarentee that there are enough
-radial ders to saturate the SMs, espeically if only have 1 species. Thus, we will also issue the other reductions
-in the same kernel call. We will target 1 thread block per SM, so 1024 threads per block.
-It is probably  preferable to use different streams.
+radial ders to saturate the SMs, espeically if only have 1 species. 
+Thus, we will also issue the other reductions in the same kernel call. 
+We will target 1 thread block per SM, so 1024 threads per block.
 */
   const int kk = team.league_rank();
   F_FLOAT reduction_result = 0;

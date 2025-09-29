@@ -122,7 +122,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::settings(int narg, char **arg)
   if (narg != 3 && narg != 6)
     error->all(
         FLERR,
-        "Pair mtp/extrapolation/kk/s requires 3 : {potential_file} \"chunk_size\" {chunksize} "
+        "Pair mtp/extrapolation/kk/s requires 3 : {potential_file} \"chunksize\" {chunksize} "
         "Or 6 arguments: {potential_file} {output_file} {selection_threshold} "
         "{break_threshold} \"chunksize\" {chunksize}.");
 
@@ -376,7 +376,6 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
   chunk_offset = 0;
 
   // Team sizes. We specify 32 for 1 warp per thread block.
-  // Maybe need 64 for AMD?
   int team_size_default = 1;
   int vector_length_default = 1;
   if (!host_flag) team_size_default = 64;
@@ -537,7 +536,7 @@ void PairMTPsExtrapolationKokkos<DeviceType>::compute(int eflag_in, int vflag_in
       }
     }
 
-    // ========== Compute force (and convolve alphas to get energy if needed) ==========
+    // ========== Compute force (and dot product with alphas to get energy if needed) ==========
     {
       int team_size = team_size_default;
       if (!host_flag && max_neighs < 32) team_size = 32;
