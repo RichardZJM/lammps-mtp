@@ -217,7 +217,7 @@ template <class DeviceType> struct FindMaxNumNeighs {
   }
 };
 
-// Finds the maximum number of neighbours in all neigbhourhoods.
+// Finds the maximum number of valid MTP neighbours in all neigbhourhoods.
 template <class DeviceType> struct FindMaxValidNeighs {
   typedef DeviceType device_type;
   typedef ArrayTypes<DeviceType> AT;
@@ -360,21 +360,7 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
                                                            max_cutoff_sq, d_num_valid_neighs,
                                                            d_valid_neighs),
                             Kokkos::Max<int>(max_valid_neighs));
-    // std::cout << mex_neighs << std::endl;
   }
-  // {
-  //   auto h_temp = Kokkos::create_mirror_view(d_num_valid_neighs);
-  //   Kokkos::deep_copy(h_temp, d_num_valid_neighs);
-  //   for (int i = 0; i < inum; i++) std::cout << h_temp[i] << " ";
-  // }
-
-  // {
-  //   auto h_temp = Kokkos::create_mirror_view(d_valid_neighs);
-  //   Kokkos::deep_copy(h_temp, d_valid_neighs);
-  //   for (int i = 0; i < mex_neighs; i++) std::cout << h_temp(i, 1) << " ";
-  //   std::cout << std::endl;
-  // }
-
   // Handling batching
   chunk_size =    // chunk_size is the working chunk size and may change per compute pass
       MIN(input_chunk_size,
