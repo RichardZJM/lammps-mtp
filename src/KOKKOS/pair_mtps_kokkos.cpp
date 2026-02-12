@@ -137,9 +137,10 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::settings(int narg, 
   MemKK::realloc_kokkos(d_linear_coeffs, "mtp/kk/s:linear_coeffs", alpha_scalar_count);
 
   // We need to init these as very small views to begin with because the user might specify a very large chunk_size which is much more than inum. We will resize these as needed in compute.
+  MemKK::realloc_kokkos(d_valid_neighs, "mtp/kk/s:d_valid_neighs", 1, 1);
+  MemKK::realloc_kokkos(d_num_valid_neighs, "mtp/kk/s:d_num_valid_neighs", 1);
   MemKK::realloc_kokkos(d_moment_jacobian, "mtp/kk/s:moment_jacobian", 1, 1,
                         alpha_index_basic_count, 3);
-  MemKK::realloc_kokkos(d_within_cutoff, "mtp/kk/s:within_cutoff", 1, 1);
   MemKK::realloc_kokkos(d_moment_tensor_vals, "mtp/kk/s:moment_tensor_vals", 1, alpha_moment_count);
   MemKK::realloc_kokkos(d_nbh_energy_ders_wrt_moments, "mtp/kk/s:nbh_energy_ders_wrt_moments", 1,
                         alpha_moment_count);
@@ -216,6 +217,66 @@ template <class DeviceType> struct FindMaxNumNeighs {
   }
 };
 
+// Finds the maximum number of neighbours in all neigbhourhoods.
+template <class DeviceType> struct FindMaxValidNeighs {
+  typedef DeviceType device_type;
+  typedef ArrayTypes<DeviceType> AT;
+  typename AT::t_int_1d_randomread d_ilist;
+  typename AT::t_int_1d_randomread d_numneigh;
+  typename AT::t_neighbors_2d d_neighbors;
+  typename AT::t_x_array_randomread x;
+  const F_FLOAT max_cutoff_sq;
+  Kokkos::View<int *, DeviceType> d_num_valid_neighs;
+  Kokkos::View<int **, DeviceType> d_valid_neighs;
+
+  FindMaxValidNeighs(typename AT::t_int_1d_randomread d_ilist,
+                     typename AT::t_int_1d_randomread d_numneigh,
+                     typename AT::t_neighbors_2d d_neighbors, typename AT::t_x_array_randomread x,
+                     F_FLOAT max_cutoff_sq, Kokkos::View<int *, DeviceType> d_num_valid_neighs,
+                     Kokkos::View<int **, DeviceType> d_valid_neighs) :
+      d_ilist(d_ilist), d_numneigh(d_numneigh), d_neighbors(d_neighbors), x(x),
+      max_cutoff_sq(max_cutoff_sq), d_num_valid_neighs(d_num_valid_neighs),
+      d_valid_neighs(d_valid_neighs)
+  {
+  }
+  ~FindMaxValidNeighs() {}
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(const typename Kokkos::TeamPolicy<DeviceType>::member_type &team,
+                  int &max_valid_neighs) const
+  {
+    const int ii = team.league_rank();
+    const int i = d_ilist[ii];
+    const int num_neighs = d_numneigh(i);
+
+    const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
+
+    Kokkos::parallel_scan(Kokkos::TeamThreadRange(team, num_neighs),
+                          [&](const int jj, int &prefix, const bool final) {
+                            const int j = d_neighbors(i, jj) & NEIGHMASK;
+
+                            const F_FLOAT r0 = x(j, 0) - xi[0];
+                            const F_FLOAT r1 = x(j, 1) - xi[1];
+                            const F_FLOAT r2 = x(j, 2) - xi[2];
+                            const F_FLOAT rsq = Kokkos::fma(r0, r0, Kokkos::fma(r1, r1, r2 * r2));
+
+                            const int is_valid = (rsq < max_cutoff_sq) ? 1 : 0;
+                            const int pos = prefix;
+                            prefix += is_valid;
+
+                            if (final) {
+                              if (is_valid) { d_valid_neighs(pos, ii) = j; }
+
+                              // The last iteration’s final prefix is the total number of valid neighbors.
+                              if (jj == num_neighs - 1) {
+                                d_num_valid_neighs(ii) = prefix;
+                                if (max_valid_neighs < prefix) max_valid_neighs = prefix;
+                              }
+                            }
+                          });
+  }
+};
+
 /* ----------------------------------------------------------------------
    This version is a straightforward implementation
    ---------------------------------------------------------------------- */
@@ -276,10 +337,43 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     // clang-format on
   }
 
-  //Precalc the max neighs. This is needed to resize the jacobian.
+  //Precalc the max neighs.
   max_neighs = 0;
   Kokkos::parallel_reduce("PairMTPsKokkos::find_max_neighs", inum,
                           FindMaxNumNeighs<DeviceType>(k_list), Kokkos::Max<int>(max_neighs));
+  // std::cout << max_neighs << std::endl;
+
+  if ((int) d_num_valid_neighs.extent(0) < inum) {
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_num_valid_neighs, inum);
+  }
+  if ((int) d_valid_neighs.extent(1) < inum || (int) d_valid_neighs.extent(0) < max_neighs) {
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_valid_neighs, max_neighs, inum);
+  }
+
+  // Precalculate the number of valid MTP neighs and stream compact them
+  int max_valid_neighs = 0;
+  {
+    const int team_size = 64;
+    Kokkos::TeamPolicy<DeviceType> policy_valid_neighs(inum, team_size);
+    Kokkos::parallel_reduce("PairMTPsKokkos::find_max_valid_neighs", policy_valid_neighs,
+                            FindMaxValidNeighs<DeviceType>(d_ilist, d_numneigh, d_neighbors, x,
+                                                           max_cutoff_sq, d_num_valid_neighs,
+                                                           d_valid_neighs),
+                            Kokkos::Max<int>(max_valid_neighs));
+    // std::cout << mex_neighs << std::endl;
+  }
+  // {
+  //   auto h_temp = Kokkos::create_mirror_view(d_num_valid_neighs);
+  //   Kokkos::deep_copy(h_temp, d_num_valid_neighs);
+  //   for (int i = 0; i < inum; i++) std::cout << h_temp[i] << " ";
+  // }
+
+  // {
+  //   auto h_temp = Kokkos::create_mirror_view(d_valid_neighs);
+  //   Kokkos::deep_copy(h_temp, d_valid_neighs);
+  //   for (int i = 0; i < mex_neighs; i++) std::cout << h_temp(i, 1) << " ";
+  //   std::cout << std::endl;
+  // }
 
   // Handling batching
   chunk_size =    // chunk_size is the working chunk size and may change per compute pass
@@ -301,10 +395,9 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
   }
   // Resize the jacobian and within _cutoff if max_neighs is too large. Do not initalize; first access is write.
   if ((int) d_moment_jacobian.extent(1) < chunk_size ||
-      (int) d_moment_jacobian.extent(0) < max_neighs) {
-    Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, max_neighs, chunk_size,
+      (int) d_moment_jacobian.extent(0) < max_valid_neighs) {
+    Kokkos::realloc(Kokkos::WithoutInitializing, d_moment_jacobian, max_valid_neighs, chunk_size,
                     alpha_index_basic_count, 3);
-    Kokkos::realloc(Kokkos::WithoutInitializing, d_within_cutoff, max_neighs, chunk_size);
   }
 
   EV_FLOAT ev;
@@ -323,16 +416,16 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
     // ========== Calculate the basic alphas (Per outer-atom parallelizaton) ==========
     {
       int team_size = team_size_default;
-      if (!host_flag && max_neighs < 32) team_size = 32;
+      if (!host_flag && max_valid_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
-      check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size * max_neighs, team_size,
+      check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size * max_valid_neighs, team_size,
                                                        vector_length);
       int radial_scratch_count = 2 * (radial_func_count + radial_basis_size);
       int dist_coords_scratch_count = 4 * max_alpha_index_basic;
 
       // Reduce the scratch size to the max number of neighbors
       int scratch_size = scratch_size_helper<F_FLOAT>(
-          min(team_size, max_neighs) * (radial_scratch_count + dist_coords_scratch_count));
+          min(team_size, max_valid_neighs) * (radial_scratch_count + dist_coords_scratch_count));
       Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
                                                                                      team_size);
       policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
@@ -449,7 +542,7 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
   const int i = d_ilist[ii + chunk_offset];
   const F_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
   const int itype = type[i] - 1;    // switch to zero indexing
-  const int jnum = d_numneigh(i);
+  const int jnum = d_num_valid_neighs(ii + chunk_offset);
   const int array_size = Kokkos::min(team.team_size(), jnum);
 
   shared_double_2d s_radial_vals(team.team_scratch(0), array_size, radial_func_count);
@@ -461,15 +554,10 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
 
   // Now we calculate the alpha basics.
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [=](const int jj) {
-    const int j = d_neighbors(i, jj) & NEIGHMASK;
+    const int j = d_valid_neighs(jj, ii + chunk_offset);
     const int jtype = type[j] - 1;    // switch to zero indexing
     const F_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
     const F_FLOAT rsq = Kokkos::fma(r[0], r[0], Kokkos::fma(r[1], r[1], r[2] * r[2]));
-
-    const bool valid_pair = rsq < max_cutoff_sq;
-    d_within_cutoff(jj, ii) = valid_pair;
-
-    if (!valid_pair) return;
     const F_FLOAT dist = sqrt(rsq);
 
     s_dist_powers(thread, 0) = s_coord_powers(thread, 0, 0) = s_coord_powers(thread, 0, 1) =
@@ -655,14 +743,11 @@ KOKKOS_INLINE_FUNCTION void PairMTPsKokkos<DeviceType>::operator()(
 
   const int ii = team.league_rank();
   const int i = d_ilist[ii + chunk_offset];
-  const int jnum = d_numneigh(i);
+  const int jnum = d_num_valid_neighs(ii + chunk_offset);
   bool need_energies = EVFLAG && eflag_either;
 
   Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [&](const int jj) {
-    const int j = d_neighbors(i, jj) & NEIGHMASK;
-
-    if (!d_within_cutoff(jj, ii)) return;
-
+    const int j = d_valid_neighs(jj, ii + chunk_offset);
     F_FLOAT temp_force[3] = {0, 0, 0};
     for (int k = 0; k < alpha_index_basic_count; k++) {
       for (int a = 0; a < 3; a++) {

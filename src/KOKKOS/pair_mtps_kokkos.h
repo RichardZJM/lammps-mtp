@@ -114,7 +114,7 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
   int wave_sizes[3] = {0};
 
   // Characteric flags
-  int inum, max_neighs;
+  int inum, max_neighs, max_valid_neighs;
   int host_flag, neighflag;
 
   int eflag, vflag;    // Energy and virial flag
@@ -144,11 +144,12 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
   Kokkos::View<double *, DeviceType> d_linear_coeffs;          // Basis coeffs
 
   // Global working buffers.
+  Kokkos::View<int **, DeviceType> d_valid_neighs;
+  Kokkos::View<int *, DeviceType> d_num_valid_neighs;
   Kokkos::View<double ****, DeviceType> d_moment_jacobian;
   Kokkos::View<double **, Kokkos::LayoutRight, DeviceType>
       d_moment_tensor_vals;    // This promotes some memory coalescing
   Kokkos::View<double **, Kokkos::LayoutRight, DeviceType> d_nbh_energy_ders_wrt_moments;
-  Kokkos::View<bool **, DeviceType> d_within_cutoff;
 
   // Typedefs for shared memory
   typedef Kokkos::View<F_FLOAT **[3], typename DeviceType::scratch_memory_space,
