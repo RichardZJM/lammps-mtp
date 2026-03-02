@@ -37,10 +37,7 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
  public:
   // Structs for kernels
   struct TagPairMTPInitMomentValsDers {};
-  struct TagPairMTPComputeAlphaBasic {};
-  struct TagPairMTPComputeAlphaTimes {};
   struct TagPairMTPSetScalarNbhDers {};
-  struct TagPairMTPComputeNbhDers {};
   template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
@@ -77,28 +74,10 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPInitMomentValsDers, const int &k, const int &ii) const;
 
-  // Kernels for computation
-  KOKKOS_INLINE_FUNCTION
-  void
-  operator()(TagPairMTPComputeAlphaBasic,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type
-                 &team) const;
-
-  KOKKOS_INLINE_FUNCTION
-  void
-  operator()(TagPairMTPComputeAlphaTimes,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaTimes>::member_type
-                 &team) const;
-
   KOKKOS_INLINE_FUNCTION
   void operator()(TagPairMTPSetScalarNbhDers, const int &k, const int &ii) const;
 
-  KOKKOS_INLINE_FUNCTION
-  void
-  operator()(TagPairMTPComputeNbhDers,
-             const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeNbhDers>::member_type
-                 &team) const;
-
+  // Main Computation Kernel
   template <int NEIGHFLAG, int EVFLAG>
   KOKKOS_INLINE_FUNCTION void
   operator()(const TagPairMTPComputeForce<NEIGHFLAG, EVFLAG> &,
@@ -146,7 +125,6 @@ template <class DeviceType> class PairMTPsKokkos : public PairMTP {
   // Global working buffers.
   Kokkos::View<int **, DeviceType> d_valid_neighs;
   Kokkos::View<int *, DeviceType> d_num_valid_neighs;
-  Kokkos::View<double ****, DeviceType> d_moment_jacobian;
   Kokkos::View<double **, Kokkos::LayoutRight, DeviceType>
       d_moment_tensor_vals;    // This promotes some memory coalescing
   Kokkos::View<double **, Kokkos::LayoutRight, DeviceType> d_nbh_energy_ders_wrt_moments;
