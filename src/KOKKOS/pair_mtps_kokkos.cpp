@@ -401,15 +401,11 @@ template <class DeviceType> void PairMTPsKokkos<DeviceType>::compute(int eflag_i
 
     // ========== Massive Fused Main Kernel ==========
     {
-      int team_size = team_size_default;
-      if (!host_flag && max_valid_neighs < 32) team_size = 32;
-      // int vector_length = vector_length_default;
-      // check_team_size_for<TagPairMTPComputeForce>(chunk_size * max_valid_neighs, team_size,
-      //                                             vector_length);
+      int team_size = 512;
 
-      int radial_scratch_count = 2 * (radial_func_count + radial_basis_size);
-      int dist_coords_scratch_count = 4 * max_alpha_index_basic;
-      int scratch_size = scratch_size_helper<F_FLOAT>(
+      const int radial_scratch_count = 2 * (radial_func_count + radial_basis_size);
+      const int dist_coords_scratch_count = 4 * max_alpha_index_basic;
+      const int scratch_size = scratch_size_helper<F_FLOAT>(
           max_valid_neighs * (radial_scratch_count + dist_coords_scratch_count));
 
       if (neighflag == HALF) {
