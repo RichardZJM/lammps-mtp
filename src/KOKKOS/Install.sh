@@ -397,6 +397,8 @@ action pair_mliap_kokkos.cpp pair_mliap.cpp
 action pair_mliap_kokkos.h pair_mliap.h
 action pair_morse_kokkos.cpp
 action pair_morse_kokkos.h
+action pair_mtp_kokkos.h pair_mtp.h
+action pair_mtp_kokkos.cpp pair_mtp.cpp
 action pair_multi_lucy_rx_kokkos.cpp pair_multi_lucy_rx.cpp
 action pair_multi_lucy_rx_kokkos.h pair_multi_lucy_rx.h
 action pair_pace_extrapolation_kokkos.cpp pair_pace_extrapolation.cpp
