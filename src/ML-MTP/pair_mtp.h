@@ -50,7 +50,7 @@ class PairMTP : public Pair {
   double scaling;       // All forces are multiplied by scaling
 
   // Radial basis
-  //1 => "RBChebyshev"
+  //1 => "RBChebyshev", 2-> "LRBSChebyshev"
   int radial_basis_type_index;        // Index for MPI Bcast
   RadialMTPBasis *radial_basis;       // Pointer to basis object
   double *radial_basis_coeffs;        // These are the radial basis coeffs (c)

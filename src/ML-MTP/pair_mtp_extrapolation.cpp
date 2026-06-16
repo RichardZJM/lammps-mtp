@@ -158,7 +158,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       valid_j[valid_count] = j;
 
       const double dist = std::sqrt(rsq);
-      radial_basis->calc_radial_basis_ders(dist);
+      radial_basis->calc_radial_basis_ders(dist, itype, jtype);
 
       // Precompute the coord and distance power
       for (int k = 1; k < max_alpha_index_basic; k++) {
