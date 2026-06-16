@@ -310,7 +310,7 @@ void PairNLH::write_data_all(FILE *fp)
 {
   for (int i = 1; i <= atom->ntypes; i++) {
     for (int j = i; j <= atom->ntypes; j++) {
-      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g %g\n", i, j, z[i], z[j], a1[i][j], a2[i][j],
+      fprintf(fp, "%d %d %g %g %g %g %g %g %g %g %g %g\n", i, j, z[i], z[j], a1[i][j], a2[i][j],
               a3[i][j], b1[i][j], b2[i][j], b3[i][j], r1[i][j], r2[i][j]);
     }
   }
