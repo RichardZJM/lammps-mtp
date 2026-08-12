@@ -162,6 +162,48 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::coeff(int narg, char
   Kokkos::deep_copy(d_radial_basis_coeffs, h_radial_basis_coeffs);
   Kokkos::deep_copy(d_species_coeffs, h_species_coeffs);
   Kokkos::deep_copy(d_linear_coeffs, h_linear_coeffs);
+
+  // Copy LRBS_Chebyshev species-pair data to device
+  if (radial_basis_type_index == 2) {
+    auto *lrbs = static_cast<LRBSChebyshev *>(radial_basis);
+    lrbs->init_precomputations();
+
+    int n2 = species_count * species_count;
+
+    MemKK::realloc_kokkos(d_lrbs_min_vals, "mtp/kk:lrbs_min_vals", n2);
+    MemKK::realloc_kokkos(d_lrbs_max_vals, "mtp/kk:lrbs_max_vals", n2);
+    MemKK::realloc_kokkos(d_lrbs_switching_points, "mtp/kk:lrbs_switch_points", n2);
+    MemKK::realloc_kokkos(d_lrbs_inv_left_ranges, "mtp/kk:lrbs_inv_left_ranges", n2);
+    MemKK::realloc_kokkos(d_lrbs_inv_right_ranges, "mtp/kk:lrbs_inv_right_ranges", n2);
+    MemKK::realloc_kokkos(d_lrbs_cheb_mults, "mtp/kk:lrbs_cheb_mults", n2);
+    MemKK::realloc_kokkos(d_lrbs_cheb_offsets, "mtp/kk:lrbs_cheb_offsets", n2);
+
+    auto h_min = Kokkos::create_mirror_view(d_lrbs_min_vals);
+    auto h_max = Kokkos::create_mirror_view(d_lrbs_max_vals);
+    auto h_sw = Kokkos::create_mirror_view(d_lrbs_switching_points);
+    auto h_inv_l = Kokkos::create_mirror_view(d_lrbs_inv_left_ranges);
+    auto h_inv_r = Kokkos::create_mirror_view(d_lrbs_inv_right_ranges);
+    auto h_mult = Kokkos::create_mirror_view(d_lrbs_cheb_mults);
+    auto h_off = Kokkos::create_mirror_view(d_lrbs_cheb_offsets);
+
+    for (int i = 0; i < n2; i++) {
+      h_min(i) = lrbs->min_vals[i];
+      h_max(i) = lrbs->max_vals[i];
+      h_sw(i) = lrbs->switching_points[i];
+      h_inv_l(i) = lrbs->inv_left_ranges[i];
+      h_inv_r(i) = lrbs->inv_right_ranges[i];
+      h_mult(i) = lrbs->cheb_mults[i];
+      h_off(i) = lrbs->cheb_offsets[i];
+    }
+
+    Kokkos::deep_copy(d_lrbs_min_vals, h_min);
+    Kokkos::deep_copy(d_lrbs_max_vals, h_max);
+    Kokkos::deep_copy(d_lrbs_switching_points, h_sw);
+    Kokkos::deep_copy(d_lrbs_inv_left_ranges, h_inv_l);
+    Kokkos::deep_copy(d_lrbs_inv_right_ranges, h_inv_r);
+    Kokkos::deep_copy(d_lrbs_cheb_mults, h_mult);
+    Kokkos::deep_copy(d_lrbs_cheb_offsets, h_off);
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -414,18 +456,33 @@ template <class DeviceType> void PairMTPKokkos<DeviceType>::compute(int eflag_in
       int team_size = team_size_default;
       if (!host_flag && max_valid_neighs < 32) team_size = 32;
       int vector_length = vector_length_default;
-      check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size * max_valid_neighs, team_size,
-                                                       vector_length);
+
       int radial_scratch_count = 2 * (radial_func_count + radial_basis_size);
       int dist_coords_scratch_count = 4 * max_alpha_index_basic;
 
-      // Reduce the scratch size to the max number of neighbors
-      int scratch_size = scratch_size_helper<KK_FLOAT>(
-          min(team_size, max_valid_neighs) * (radial_scratch_count + dist_coords_scratch_count));
-      Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
-                                                                                     team_size);
-      policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
-      Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
+      if (radial_basis_type_index == 2) {
+        check_team_size_for<TagPairMTPComputeAlphaBasicLRBS>(chunk_size * max_valid_neighs,
+                                                             team_size, vector_length);
+
+        int scratch_size = scratch_size_helper<KK_FLOAT>(
+            min(team_size, max_valid_neighs) * (radial_scratch_count + dist_coords_scratch_count));
+
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicLRBS> policy_basic_alpha(
+            chunk_size, team_size);
+        policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_for("ComputeAlphaBasicLRBS", policy_basic_alpha, *this);
+      } else {
+        check_team_size_for<TagPairMTPComputeAlphaBasic>(chunk_size * max_valid_neighs, team_size,
+                                                         vector_length);
+
+        int scratch_size = scratch_size_helper<KK_FLOAT>(
+            min(team_size, max_valid_neighs) * (radial_scratch_count + dist_coords_scratch_count));
+
+        Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic> policy_basic_alpha(chunk_size,
+                                                                                       team_size);
+        policy_basic_alpha = policy_basic_alpha.set_scratch_size(0, Kokkos::PerTeam(scratch_size));
+        Kokkos::parallel_for("ComputeAlphaBasic", policy_basic_alpha, *this);
+      }
     }
 
     // ========== Calculate the composite moment values  ==========
@@ -624,6 +681,154 @@ KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
       Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
 
       // Get the component's derivatives too
+      pow *= der / dist;
+      KK_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
+
+      if (a0 != 0)
+        temp_jac[0] =
+            Kokkos::fma(val * a0, s_coord_powers(thread, a0 - 1, 0) * pow1 * pow2, temp_jac[0]);
+      if (a1 != 0)
+        temp_jac[1] =
+            Kokkos::fma(val * a1, pow0 * s_coord_powers(thread, a1 - 1, 1) * pow2, temp_jac[1]);
+      if (a2 != 0)
+        temp_jac[2] =
+            Kokkos::fma(val * a2, pow0 * pow1 * s_coord_powers(thread, a2 - 1, 2), temp_jac[2]);
+
+      d_moment_jacobian(jj, ii, k, 0) = temp_jac[0];
+      d_moment_jacobian(jj, ii, k, 1) = temp_jac[1];
+      d_moment_jacobian(jj, ii, k, 2) = temp_jac[2];
+    }
+  });
+}
+
+// Calculates the basic alphas for LRBS using fused operations where possible
+template <class DeviceType>
+KOKKOS_INLINE_FUNCTION void PairMTPKokkos<DeviceType>::operator()(
+    TagPairMTPComputeAlphaBasicLRBS,
+    const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicLRBS>::member_type
+        &team) const
+{
+  const int ii = team.league_rank();
+  const int thread = team.team_rank();
+
+  const int i = d_ilist[ii + chunk_offset];
+  const KK_FLOAT xi[3] = {x(i, 0), x(i, 1), x(i, 2)};
+  const int itype = d_map(type[i]);
+  const int jnum = d_num_valid_neighs(ii + chunk_offset);
+  const int array_size = Kokkos::min(team.team_size(), jnum);
+
+  shared_kk_float_2d s_radial_vals(team.team_scratch(0), array_size, radial_func_count);
+  shared_kk_float_2d s_radial_ders(team.team_scratch(0), array_size, radial_func_count);
+  shared_kk_float_2d s_dist_powers(team.team_scratch(0), array_size, max_alpha_index_basic);
+  shared_kk_float_3d s_coord_powers(team.team_scratch(0), array_size, max_alpha_index_basic);
+  shared_kk_float_2d s_radial_basis_vals(team.team_scratch(0), array_size, radial_basis_size);
+  shared_kk_float_2d s_radial_basis_ders(team.team_scratch(0), array_size, radial_basis_size);
+
+  Kokkos::parallel_for(Kokkos::TeamThreadRange(team, jnum), [&](const int jj) {
+    const int j = d_valid_neighs(jj, ii + chunk_offset);
+    const int jtype = d_map(type[j]);
+    const KK_FLOAT r[3] = {x(j, 0) - xi[0], x(j, 1) - xi[1], x(j, 2) - xi[2]};
+    const KK_FLOAT rsq = Kokkos::fma(r[0], r[0], Kokkos::fma(r[1], r[1], r[2] * r[2]));
+    const KK_FLOAT dist = sqrt(rsq);
+
+    s_dist_powers(thread, 0) = s_coord_powers(thread, 0, 0) = s_coord_powers(thread, 0, 1) =
+        s_coord_powers(thread, 0, 2) = 1;
+
+    for (int k = 1; k < max_alpha_index_basic; k++) {
+      s_dist_powers(thread, k) = s_dist_powers(thread, k - 1) * dist;
+      for (int a = 0; a < 3; a++)
+        s_coord_powers(thread, k, a) = s_coord_powers(thread, k - 1, a) * r[a];
+    }
+
+    // ---- LRBS_Chebyshev species-pair-specific calculation ----
+    const int idx = itype * species_count + jtype;
+
+    const KK_FLOAT min_val = d_lrbs_min_vals(idx);
+    const KK_FLOAT max_val = d_lrbs_max_vals(idx);
+    const KK_FLOAT inv_left = d_lrbs_inv_left_ranges(idx);
+    const KK_FLOAT inv_right = d_lrbs_inv_right_ranges(idx);
+    const KK_FLOAT mult = d_lrbs_cheb_mults(idx);
+    const KK_FLOAT offset = d_lrbs_cheb_offsets(idx);
+
+    const KK_FLOAT ksi = dist * mult - offset;
+
+    // Envelope value and derivative for this species pair
+    KK_FLOAT t_left = (dist - min_val) * inv_left;
+    t_left = (t_left < 0.0 ? 0.0 : (t_left > 1.0 ? 1.0 : t_left));
+    KK_FLOAT s_left = t_left * t_left * t_left * (t_left * (t_left * 6.0 - 15.0) + 10.0);
+
+    KK_FLOAT t_right = (max_val - dist) * inv_right;
+    t_right = (t_right < 0.0 ? 0.0 : (t_right > 1.0 ? 1.0 : t_right));
+    KK_FLOAT s_right = t_right * t_right * t_right * (t_right * (t_right * 6.0 - 15.0) + 10.0);
+
+    KK_FLOAT env = s_left * s_right;
+
+    KK_FLOAT active_left = (t_left > 0.0 && t_left < 1.0) ? 1.0 : 0.0;
+    KK_FLOAT ds_left =
+        active_left * 30.0 * t_left * t_left * (1.0 - t_left) * (1.0 - t_left) * inv_left;
+
+    KK_FLOAT active_right = (t_right > 0.0 && t_right < 1.0) ? 1.0 : 0.0;
+    KK_FLOAT ds_right =
+        -active_right * 30.0 * t_right * t_right * (1.0 - t_right) * (1.0 - t_right) * inv_right;
+
+    KK_FLOAT env_der = ds_left * s_right + s_left * ds_right;
+
+    // Chebyshev radial basis values / derivatives: T0 = 1, T1 = ksi
+    s_radial_basis_vals(thread, 0) = scaling * env;
+    s_radial_basis_ders(thread, 0) = scaling * env_der;
+
+    if (radial_basis_size > 1) {
+      s_radial_basis_vals(thread, 1) = scaling * env * ksi;
+      s_radial_basis_ders(thread, 1) = scaling * (env_der * ksi + env * mult);
+    }
+
+    const KK_FLOAT two_ksi = 2.0 * ksi;
+    const KK_FLOAT two_mult = 2.0 * mult;
+
+    for (int k = 2; k < radial_basis_size; k++) {
+      s_radial_basis_vals(thread, k) =
+          two_ksi * s_radial_basis_vals(thread, k - 1) - s_radial_basis_vals(thread, k - 2);
+      s_radial_basis_ders(thread, k) = two_mult * s_radial_basis_vals(thread, k - 1) +
+          two_ksi * s_radial_basis_ders(thread, k - 1) - s_radial_basis_ders(thread, k - 2);
+    }
+
+    // Combine with learned radial coefficients
+    const int pair_offset = itype * species_count + jtype;
+    for (int mu = 0; mu < radial_func_count; mu++) {
+      KK_FLOAT val = 0;
+      KK_FLOAT der = 0;
+      int offset = (pair_offset * radial_basis_size * radial_func_count) + mu * radial_basis_size;
+
+      for (int ri = 0; ri < radial_basis_size; ri++) {
+        val = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_vals(thread, ri), val);
+        der = Kokkos::fma(d_radial_basis_coeffs(offset + ri), s_radial_basis_ders(thread, ri), der);
+      }
+
+      s_radial_vals(thread, mu) = val;
+      s_radial_ders(thread, mu) = der;
+    }
+
+    // ---- Same moment / Jacobian accumulation as the RBChebyshev kernel ----
+    for (int k = 0; k < alpha_index_basic_count; k++) {
+      int mu = d_alpha_index_basic(k, 0);
+      int a0 = d_alpha_index_basic(k, 1);
+      int a1 = d_alpha_index_basic(k, 2);
+      int a2 = d_alpha_index_basic(k, 3);
+
+      KK_FLOAT val = s_radial_vals(thread, mu);
+      KK_FLOAT der = s_radial_ders(thread, mu);
+
+      int norm_rank = a0 + a1 + a2;
+      KK_FLOAT norm_fac = 1.0 / s_dist_powers(thread, norm_rank);
+      val *= norm_fac;
+      der = Kokkos::fma(norm_fac, der, -norm_rank * val / dist);
+
+      KK_FLOAT pow0 = s_coord_powers(thread, a0, 0);
+      KK_FLOAT pow1 = s_coord_powers(thread, a1, 1);
+      KK_FLOAT pow2 = s_coord_powers(thread, a2, 2);
+      KK_FLOAT pow = pow0 * pow1 * pow2;
+      Kokkos::atomic_add(&d_moment_tensor_vals(ii, k), val * pow);
+
       pow *= der / dist;
       KK_FLOAT temp_jac[3] = {pow * r[0], pow * r[1], pow * r[2]};
 

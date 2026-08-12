@@ -493,6 +493,8 @@ action pair_mtp_kokkos.h pair_mtp.h
 action pair_mtp_kokkos.cpp pair_mtp.cpp
 action pair_multi_lucy_rx_kokkos.cpp pair_multi_lucy_rx.cpp
 action pair_multi_lucy_rx_kokkos.h pair_multi_lucy_rx.h
+action pair_nlh.cpp pair_nlh_kokkos.cpp
+action pair_nlh.h pair_nlh_kokkos.h
 action pair_nm_cut_kokkos.cpp pair_nm_cut.cpp
 action pair_nm_cut_kokkos.h pair_nm_cut.h
 action pair_nm_cut_coul_cut_kokkos.cpp pair_nm_cut_coul_cut.cpp

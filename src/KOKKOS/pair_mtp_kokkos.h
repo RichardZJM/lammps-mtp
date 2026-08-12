@@ -42,6 +42,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   struct TagPairMTPComputeAlphaTimes {};
   struct TagPairMTPSetScalarNbhDers {};
   struct TagPairMTPComputeNbhDers {};
+  struct TagPairMTPComputeAlphaBasicLRBS {};
   template <int NEIGHFLAG, int EVFLAG> struct TagPairMTPComputeForce {};
 
   enum { EnabledNeighFlags = HALF | HALFTHREAD };
@@ -84,6 +85,12 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   operator()(TagPairMTPComputeAlphaBasic,
              const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasic>::member_type
                  &team) const;
+
+  KOKKOS_INLINE_FUNCTION
+  void operator()(
+      TagPairMTPComputeAlphaBasicLRBS,
+      const typename Kokkos::TeamPolicy<DeviceType, TagPairMTPComputeAlphaBasicLRBS>::member_type
+          &team) const;
 
   KOKKOS_INLINE_FUNCTION
   void
@@ -136,6 +143,15 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<int **, DeviceType> d_alpha_index_times;      // For combining alphas
   Kokkos::View<int *, DeviceType> d_waves;                   // Dependency waves
   Kokkos::View<int *, DeviceType> d_alpha_moment_mapping;    // Maps alphas to the basis functions.
+
+  // LRBS Chebyshev device data
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_min_vals;
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_max_vals;
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_switching_points;
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_inv_left_ranges;
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_inv_right_ranges;
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_cheb_mults;
+  Kokkos::View<KK_FLOAT *, DeviceType> d_lrbs_cheb_offsets;
 
   // The learned coefficients.
   Kokkos::View<KK_FLOAT *, DeviceType> d_radial_basis_coeffs;    // The radial components.
