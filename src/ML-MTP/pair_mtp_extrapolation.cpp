@@ -167,7 +167,7 @@ void PairMTPExtrapolation::compute(int eflag, int vflag)
       neighbor_cache[valid_count][0] = inv_dist;
       double *vals = neighbor_cache[valid_count] + 1;
       double *ders = vals + radial_func_count;
-      radial_basis->calc_radial_basis_ders(dist);
+      radial_basis->calc_radial_basis_ders(dist, itype, jtype);
       const double *basis_vals = radial_basis->radial_basis_vals;
       const double *basis_ders = radial_basis->radial_basis_ders;
       std::copy(basis_vals, basis_vals + radial_basis_size, radial_basis_cache[valid_count]);

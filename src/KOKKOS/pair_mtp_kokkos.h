@@ -165,6 +165,7 @@ template <class DeviceType> class PairMTPKokkos : public PairMTP {
   Kokkos::View<KK_FLOAT *, DeviceType> d_species_coeffs;         // The species-based constants
   Kokkos::View<KK_FLOAT *, DeviceType> d_linear_coeffs;          // Basis coeffs
   Kokkos::View<KK_FLOAT *, DeviceType> d_moment_coeffs;          // Scalar seeds
+  Kokkos::View<KK_FLOAT *[6], Kokkos::LayoutRight, DeviceType> d_lrbs_params;    // LRBS envelope
 
   // Global working buffers.
   Kokkos::View<int **, DeviceType> d_valid_neighs;

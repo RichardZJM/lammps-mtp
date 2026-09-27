@@ -139,6 +139,8 @@
 /pair_mtp.h
 /pair_mtp_extrapolation.cpp
 /pair_mtp_extrapolation.h
+/pair_nlh.cpp
+/pair_nlh.h
 
 /compute_pace.cpp
 /compute_pace.h

@@ -55,7 +55,7 @@ class PairMTP : public Pair {
   int species_count;
   double scaling;
 
-  // Radial basis: 1 => RBChebyshev.
+  // Radial basis: 1 => RBChebyshev, 2 => LRBSChebyshev.
   int radial_basis_type_index;
   RadialMTPBasis *radial_basis;
   double *radial_basis_coeffs;

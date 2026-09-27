@@ -30,7 +30,8 @@ class RadialMTPBasis : protected Pointers {
   RadialMTPBasis(int size, LAMMPS *lmp);
   virtual ~RadialMTPBasis();
 
-  virtual void calc_radial_basis_ders(double dist) = 0;
+  // Species indices select per-pair parameters; bases without them ignore the indices
+  virtual void calc_radial_basis_ders(double dist, int itype, int jtype) = 0;
 
   int size;             // The size of the radial basis functions
   double min_cutoff;    //  Minimum radius value
@@ -41,6 +42,10 @@ class RadialMTPBasis : protected Pointers {
   double *radial_basis_vals;
   double *radial_basis_ders;
 
+ protected:
+  // For bases that parse their own section of the file and allocate the value arrays themselves
+  explicit RadialMTPBasis(LAMMPS *lmp);
+
  private:
   //Specifically reads the basis properties (ie. cutoffs and size) and not the radial parameters
   void read_basis_properties(TextFileReader &tfr);
@@ -50,7 +55,31 @@ class RBChebyshev : public RadialMTPBasis {
  public:
   RBChebyshev(int size, LAMMPS *lmp) : RadialMTPBasis(size, lmp) {}
   RBChebyshev(TextFileReader &tfr, LAMMPS *lmp) : RadialMTPBasis(tfr, lmp) {}
-  void calc_radial_basis_ders(double val) override;
+  void calc_radial_basis_ders(double val, int itype, int jtype) override;
+};
+
+// Chebyshev polynomials under a per-species-pair smootherstep envelope
+class LRBSChebyshev : public RadialMTPBasis {
+ public:
+  LRBSChebyshev(TextFileReader &tfr, LAMMPS *lmp, int species_count);
+  LRBSChebyshev(int size, int species_count, LAMMPS *lmp);
+  ~LRBSChebyshev() override;
+
+  void calc_radial_basis_ders(double dist, int itype, int jtype) override;
+  void init_precomputations();    // Derives the ranges below from min/max/switching points
+
+  int species_count;
+  double *min_vals;            // Per-species-pair min cutoffs (species_count^2 flat array)
+  double *max_vals;            // Per-species-pair max cutoffs (species_count^2 flat array)
+  double *switching_points;    // Per-species-pair envelope peaks (species_count^2 flat array)
+
+  double *inv_left_ranges;     // 1.0 / (peak - min)
+  double *inv_right_ranges;    // 1.0 / (max - peak)
+  double *cheb_mults;          // 2.0 / (max - min)
+  double *cheb_offsets;        // (min + max) / (max - min)
+
+ private:
+  void allocate_pair_arrays();
 };
 
 }    // namespace LAMMPS_NS

@@ -194,6 +194,24 @@ template <class DeviceType> void PairMTPExtrapolationKokkos<DeviceType>::coeff(i
   Kokkos::deep_copy(d_linear_coeffs, h_linear_coeffs);
   Kokkos::deep_copy(d_moment_coeffs, h_moment_coeffs);
 
+  // LRBSChebyshev per-species-pair envelope, packed as
+  // {min, max, 1/(peak - min), 1/(max - peak), chebyshev mult, chebyshev offset}
+  if (radial_basis_type_index == 2) {
+    auto *lrbs = static_cast<LRBSChebyshev *>(radial_basis);
+    const int n2 = species_count * species_count;
+    MemKK::realloc_kokkos(d_lrbs_params, "mtp/extrapolation/kk:lrbs_params", n2);
+    auto h_lrbs_params = Kokkos::create_mirror_view(d_lrbs_params);
+    for (int p = 0; p < n2; p++) {
+      h_lrbs_params(p, 0) = lrbs->min_vals[p];
+      h_lrbs_params(p, 1) = lrbs->max_vals[p];
+      h_lrbs_params(p, 2) = lrbs->inv_left_ranges[p];
+      h_lrbs_params(p, 3) = lrbs->inv_right_ranges[p];
+      h_lrbs_params(p, 4) = lrbs->cheb_mults[p];
+      h_lrbs_params(p, 5) = lrbs->cheb_offsets[p];
+    }
+    Kokkos::deep_copy(d_lrbs_params, h_lrbs_params);
+  }
+
   d_radial_basis_cache = decltype(d_radial_basis_cache)();
   d_local_coeff_ders = decltype(d_local_coeff_ders)();
   d_coeff_ders_partials = decltype(d_coeff_ders_partials)();
@@ -910,20 +928,53 @@ KOKKOS_INLINE_FUNCTION void PairMTPExtrapolationKokkos<DeviceType>::operator()(
     }
 
     // Calculate the radial basis and store in shared memory.
-    const KK_FLOAT mult = radial_mult;
-    const KK_FLOAT ksi = Kokkos::fma(2.0, dist, -cutoff_sum) * inv_cutoff_range;
+    // Only the first two terms depend on the basis type; the recurrence is shared.
+    KK_FLOAT mult, ksi;
+    if (radial_basis_type_index == 2) {
+      // LRBSChebyshev: Chebyshev polynomials under a per-species-pair smootherstep envelope
+      const int idx = itype * species_count + jtype;
+      mult = d_lrbs_params(idx, 4);
+      ksi = Kokkos::fma(dist, mult, -d_lrbs_params(idx, 5));
 
-    KK_FLOAT temp = dist - max_cutoff;
-    s_radial_basis_vals(thread, 0) = scaling * temp * temp;
-    s_radial_basis_vals(thread, 1) = scaling * ksi * temp * temp;
+      KK_FLOAT t_left = (dist - d_lrbs_params(idx, 0)) * d_lrbs_params(idx, 2);
+      t_left = (t_left < 0.0 ? 0.0 : (t_left > 1.0 ? 1.0 : t_left));
+      const KK_FLOAT s_left = t_left * t_left * t_left * (t_left * (t_left * 6.0 - 15.0) + 10.0);
+      KK_FLOAT t_right = (d_lrbs_params(idx, 1) - dist) * d_lrbs_params(idx, 3);
+      t_right = (t_right < 0.0 ? 0.0 : (t_right > 1.0 ? 1.0 : t_right));
+      const KK_FLOAT s_right =
+          t_right * t_right * t_right * (t_right * (t_right * 6.0 - 15.0) + 10.0);
+
+      const KK_FLOAT ds_left = ((t_left > 0.0) && (t_left < 1.0))
+          ? 30.0 * t_left * t_left * (1.0 - t_left) * (1.0 - t_left) * d_lrbs_params(idx, 2)
+          : 0.0;
+      const KK_FLOAT ds_right = ((t_right > 0.0) && (t_right < 1.0))
+          ? -30.0 * t_right * t_right * (1.0 - t_right) * (1.0 - t_right) * d_lrbs_params(idx, 3)
+          : 0.0;
+
+      const KK_FLOAT env = s_left * s_right;
+      const KK_FLOAT env_der = Kokkos::fma(ds_left, s_right, s_left * ds_right);
+
+      s_radial_basis_vals(thread, 0) = scaling * env;
+      s_radial_basis_vals(thread, 1) = scaling * env * ksi;
+      s_radial_basis_ders(thread, 0) = scaling * env_der;
+      s_radial_basis_ders(thread, 1) = scaling * Kokkos::fma(env_der, ksi, env * mult);
+    } else {
+      mult = radial_mult;
+      ksi = Kokkos::fma(2.0, dist, -cutoff_sum) * inv_cutoff_range;
+
+      const KK_FLOAT temp = dist - max_cutoff;
+      s_radial_basis_vals(thread, 0) = scaling * temp * temp;
+      s_radial_basis_vals(thread, 1) = scaling * ksi * temp * temp;
+      s_radial_basis_ders(thread, 0) = scaling * 2.0 * temp;
+      s_radial_basis_ders(thread, 1) = scaling * Kokkos::fma(mult, temp * temp, 2.0 * ksi * temp);
+    }
+
     for (int k = 2; k < radial_basis_size; k++) {
       s_radial_basis_vals(thread, k) = Kokkos::fma(2.0 * ksi, s_radial_basis_vals(thread, k - 1),
                                                    -s_radial_basis_vals(thread, k - 2));
     }
 
     // Do the same with the derivatives
-    s_radial_basis_ders(thread, 0) = scaling * 2.0 * temp;
-    s_radial_basis_ders(thread, 1) = scaling * Kokkos::fma(mult, temp * temp, 2.0 * ksi * temp);
     for (int k = 2; k < radial_basis_size; k++) {
       KK_FLOAT tmp = Kokkos::fma(mult, s_radial_basis_vals(thread, k - 1),
                                  ksi * s_radial_basis_ders(thread, k - 1));

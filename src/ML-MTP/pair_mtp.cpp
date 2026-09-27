@@ -184,7 +184,7 @@ void PairMTP::compute(int eflag, int vflag)
       neighbor_cache[valid_count][0] = inv_dist;
       double *vals = neighbor_cache[valid_count] + 1;
       double *ders = vals + radial_func_count;
-      radial_basis->calc_radial_basis_ders(dist);
+      radial_basis->calc_radial_basis_ders(dist, itype, jtype);
       const double *basis_vals = radial_basis->radial_basis_vals;
       const double *basis_ders = radial_basis->radial_basis_ders;
 
@@ -491,6 +491,9 @@ void PairMTP::read_file(FILE *mtp_file)
     if (radial_basis_type == "RBChebyshev") {
       radial_basis = new RBChebyshev(tfr, lmp);
       radial_basis_type_index = 1;
+    } else if (radial_basis_type == "LRBSChebyshev") {
+      radial_basis = new LRBSChebyshev(tfr, lmp, species_count);
+      radial_basis_type_index = 2;
     } else
       error->one(FLERR,
                  "Error reading MTP file. The specified radial basis set type, {}, was not "
@@ -680,6 +683,9 @@ void PairMTP::read_file(FILE *mtp_file)
     if (radial_basis_type_index == 1) {
       radial_basis = new RBChebyshev(radial_basis_size, lmp);
       radial_basis->scaling = scaling;
+    } else if (radial_basis_type_index == 2) {
+      radial_basis = new LRBSChebyshev(radial_basis_size, species_count, lmp);
+      radial_basis->scaling = scaling;
     }
 
     //Alpha index
@@ -711,6 +717,16 @@ void PairMTP::read_file(FILE *mtp_file)
     radial_basis->max_cutoff = max_cutoff;
   }
   max_cutoff_sq = max_cutoff * max_cutoff;
+
+  // Per-species-pair envelope data for LRBSChebyshev
+  if (radial_basis_type_index == 2) {
+    auto *lrbs = static_cast<LRBSChebyshev *>(radial_basis);
+    const int n2 = species_count * species_count;
+    MPI_Bcast(lrbs->min_vals, n2, MPI_DOUBLE, 0, world);
+    MPI_Bcast(lrbs->max_vals, n2, MPI_DOUBLE, 0, world);
+    MPI_Bcast(lrbs->switching_points, n2, MPI_DOUBLE, 0, world);
+    lrbs->init_precomputations();
+  }
 
   // Now we B Cast arrays
   // Alphas

@@ -180,6 +180,7 @@ template <class DeviceType> class PairMTPExtrapolationKokkos : public PairMTPExt
   Kokkos::View<KK_FLOAT *, DeviceType> d_species_coeffs;
   Kokkos::View<KK_FLOAT *, DeviceType> d_linear_coeffs;
   Kokkos::View<KK_FLOAT *, DeviceType> d_moment_coeffs;
+  Kokkos::View<KK_FLOAT *[6], Kokkos::LayoutRight, DeviceType> d_lrbs_params;    // LRBS envelope
 
   // Global working buffers.
   Kokkos::View<int **, DeviceType> d_valid_neighs;
